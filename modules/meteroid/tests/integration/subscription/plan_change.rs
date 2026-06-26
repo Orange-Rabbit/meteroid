@@ -22,7 +22,7 @@ use meteroid_store::clients::usage::{
 use meteroid_store::domain::subscription_components::{
     ComponentParameterization, ComponentParameters,
 };
-use meteroid_store::domain::{BillingType, Period, SlotUpgradeBillingMode, UsagePricingModel};
+use meteroid_store::domain::{BillingType, SlotUpgradeBillingMode, UsagePeriod, UsagePricingModel};
 use meteroid_store::repositories::subscriptions::slots::SubscriptionSlotsInterfaceAuto;
 use meteroid_store::repositories::subscriptions::{
     CancellationEffectiveAt, SubscriptionInterfaceAuto,
@@ -94,7 +94,13 @@ async fn test_schedule_plan_change(#[future] test_env: TestEnv) {
 
     let event = env
         .services()
-        .schedule_plan_change(sub_id, TENANT_ID, PLAN_VERSION_PRO_ID, vec![])
+        .schedule_plan_change(
+            common_domain::actor::Actor::System,
+            sub_id,
+            TENANT_ID,
+            PLAN_VERSION_PRO_ID,
+            vec![],
+        )
         .await
         .expect("schedule_plan_change failed");
 
@@ -124,18 +130,30 @@ async fn test_cancel_plan_change(#[future] test_env: TestEnv) {
 
     // Schedule then cancel
     env.services()
-        .schedule_plan_change(sub_id, TENANT_ID, PLAN_VERSION_PRO_ID, vec![])
+        .schedule_plan_change(
+            common_domain::actor::Actor::System,
+            sub_id,
+            TENANT_ID,
+            PLAN_VERSION_PRO_ID,
+            vec![],
+        )
         .await
         .expect("schedule_plan_change failed");
 
     env.services()
-        .cancel_plan_change(sub_id, TENANT_ID)
+        .cancel_plan_change(common_domain::actor::Actor::System, sub_id, TENANT_ID)
         .await
         .expect("cancel_plan_change failed");
 
     // Scheduling again should succeed (no duplicate)
     env.services()
-        .schedule_plan_change(sub_id, TENANT_ID, PLAN_VERSION_PRO_ID, vec![])
+        .schedule_plan_change(
+            common_domain::actor::Actor::System,
+            sub_id,
+            TENANT_ID,
+            PLAN_VERSION_PRO_ID,
+            vec![],
+        )
         .await
         .expect("re-scheduling after cancel should succeed");
 }
@@ -191,7 +209,13 @@ async fn test_plan_change_executes_at_period_end(#[future] test_env: TestEnv) {
     // --- Schedule plan change to Pro ---
 
     env.services()
-        .schedule_plan_change(sub_id, TENANT_ID, PLAN_VERSION_PRO_ID, vec![])
+        .schedule_plan_change(
+            common_domain::actor::Actor::System,
+            sub_id,
+            TENANT_ID,
+            PLAN_VERSION_PRO_ID,
+            vec![],
+        )
         .await
         .expect("schedule_plan_change failed");
 
@@ -286,7 +310,13 @@ async fn test_plan_change_rejects_draft_target(#[future] test_env: TestEnv) {
 
     let result = env
         .services()
-        .schedule_plan_change(sub_id, TENANT_ID, PLAN_VERSION_PRO_DRAFT_ID, vec![])
+        .schedule_plan_change(
+            common_domain::actor::Actor::System,
+            sub_id,
+            TENANT_ID,
+            PLAN_VERSION_PRO_DRAFT_ID,
+            vec![],
+        )
         .await;
 
     assert!(result.is_err(), "should reject draft plan version");
@@ -309,7 +339,13 @@ async fn test_plan_change_rejects_currency_mismatch(#[future] test_env: TestEnv)
     // Try to change to USD plan
     let result = env
         .services()
-        .schedule_plan_change(sub_id, TENANT_ID, PLAN_VERSION_USD_ID, vec![])
+        .schedule_plan_change(
+            common_domain::actor::Actor::System,
+            sub_id,
+            TENANT_ID,
+            PLAN_VERSION_USD_ID,
+            vec![],
+        )
         .await;
 
     assert!(result.is_err(), "should reject currency mismatch");
@@ -336,14 +372,26 @@ async fn test_plan_change_replaces_existing(#[future] test_env: TestEnv) {
     // First schedule: LeetCode → Starter
     let first_event = env
         .services()
-        .schedule_plan_change(sub_id, TENANT_ID, PLAN_VERSION_STARTER_ID, vec![])
+        .schedule_plan_change(
+            common_domain::actor::Actor::System,
+            sub_id,
+            TENANT_ID,
+            PLAN_VERSION_STARTER_ID,
+            vec![],
+        )
         .await
         .expect("first schedule should succeed");
 
     // Second schedule: LeetCode → Pro (replaces Starter change)
     let second_event = env
         .services()
-        .schedule_plan_change(sub_id, TENANT_ID, PLAN_VERSION_PRO_ID, vec![])
+        .schedule_plan_change(
+            common_domain::actor::Actor::System,
+            sub_id,
+            TENANT_ID,
+            PLAN_VERSION_PRO_ID,
+            vec![],
+        )
         .await
         .expect("second schedule should succeed (replaces first)");
 
@@ -430,7 +478,13 @@ async fn test_plan_change_rejects_inactive_subscription(#[future] test_env: Test
 
     let result = env
         .services()
-        .schedule_plan_change(sub_id, TENANT_ID, PLAN_VERSION_PRO_ID, vec![])
+        .schedule_plan_change(
+            common_domain::actor::Actor::System,
+            sub_id,
+            TENANT_ID,
+            PLAN_VERSION_PRO_ID,
+            vec![],
+        )
         .await;
 
     assert!(
@@ -455,7 +509,13 @@ async fn test_plan_change_rejects_same_plan_version(#[future] test_env: TestEnv)
     // Schedule change to the same plan version
     let result = env
         .services()
-        .schedule_plan_change(sub_id, TENANT_ID, PLAN_VERSION_STARTER_ID, vec![])
+        .schedule_plan_change(
+            common_domain::actor::Actor::System,
+            sub_id,
+            TENANT_ID,
+            PLAN_VERSION_STARTER_ID,
+            vec![],
+        )
         .await;
 
     assert!(
@@ -466,7 +526,13 @@ async fn test_plan_change_rejects_same_plan_version(#[future] test_env: TestEnv)
     // Also test immediate path
     let result = env
         .services()
-        .apply_plan_change_immediate(sub_id, TENANT_ID, PLAN_VERSION_STARTER_ID, vec![])
+        .apply_plan_change_immediate(
+            common_domain::actor::Actor::System,
+            sub_id,
+            TENANT_ID,
+            PLAN_VERSION_STARTER_ID,
+            vec![],
+        )
         .await;
 
     assert!(
@@ -519,7 +585,14 @@ async fn test_immediate_plan_change_upgrade(#[future] test_env: TestEnv) {
     // Apply immediate upgrade at Jan 16
     let result = env
         .services()
-        .apply_plan_change_immediate_at(sub_id, TENANT_ID, PLAN_VERSION_PRO_ID, vec![], change_date)
+        .apply_plan_change_immediate_at(
+            common_domain::actor::Actor::System,
+            sub_id,
+            TENANT_ID,
+            PLAN_VERSION_PRO_ID,
+            vec![],
+            change_date,
+        )
         .await
         .expect("apply_plan_change_immediate_at failed");
 
@@ -663,6 +736,7 @@ async fn test_immediate_plan_change_downgrade(#[future] test_env: TestEnv) {
     let result = env
         .services()
         .apply_plan_change_immediate_at(
+            common_domain::actor::Actor::System,
             sub_id,
             TENANT_ID,
             PLAN_VERSION_STARTER_ID,
@@ -722,13 +796,26 @@ async fn test_immediate_plan_change_cancels_pending_scheduled(#[future] test_env
 
     // Schedule an end-of-period change first
     env.services()
-        .schedule_plan_change(sub_id, TENANT_ID, PLAN_VERSION_PRO_ID, vec![])
+        .schedule_plan_change(
+            common_domain::actor::Actor::System,
+            sub_id,
+            TENANT_ID,
+            PLAN_VERSION_PRO_ID,
+            vec![],
+        )
         .await
         .expect("schedule should succeed");
 
     // Now apply immediate change (same target)
     env.services()
-        .apply_plan_change_immediate_at(sub_id, TENANT_ID, PLAN_VERSION_PRO_ID, vec![], change_date)
+        .apply_plan_change_immediate_at(
+            common_domain::actor::Actor::System,
+            sub_id,
+            TENANT_ID,
+            PLAN_VERSION_PRO_ID,
+            vec![],
+            change_date,
+        )
         .await
         .expect("immediate should succeed even with pending scheduled");
 
@@ -829,7 +916,13 @@ async fn test_end_of_period_change_with_temporal_rotation(#[future] test_env: Te
 
     // Schedule end-of-period change
     env.services()
-        .schedule_plan_change(sub_id, TENANT_ID, PLAN_VERSION_PRO_ID, vec![])
+        .schedule_plan_change(
+            common_domain::actor::Actor::System,
+            sub_id,
+            TENANT_ID,
+            PLAN_VERSION_PRO_ID,
+            vec![],
+        )
         .await
         .expect("schedule_plan_change failed");
 
@@ -964,7 +1057,13 @@ async fn test_plan_change_preserves_slot_count(#[future] test_env: TestEnv) {
 
     // --- Schedule plan change to Pro ---
     env.services()
-        .schedule_plan_change(sub_id, TENANT_ID, PLAN_VERSION_PRO_ID, vec![])
+        .schedule_plan_change(
+            common_domain::actor::Actor::System,
+            sub_id,
+            TENANT_ID,
+            PLAN_VERSION_PRO_ID,
+            vec![],
+        )
         .await
         .expect("schedule_plan_change failed");
 
@@ -1067,7 +1166,14 @@ async fn test_immediate_plan_change_preserves_slot_count(#[future] test_env: Tes
     // --- Immediate upgrade to Pro at Jan 16 ---
     let result = env
         .services()
-        .apply_plan_change_immediate_at(sub_id, TENANT_ID, PLAN_VERSION_PRO_ID, vec![], change_date)
+        .apply_plan_change_immediate_at(
+            common_domain::actor::Actor::System,
+            sub_id,
+            TENANT_ID,
+            PLAN_VERSION_PRO_ID,
+            vec![],
+            change_date,
+        )
         .await
         .expect("immediate plan change failed");
 
@@ -1158,6 +1264,7 @@ async fn test_plan_change_rate_only_to_plan_with_slots(#[future] test_env: TestE
     //    - Added: Starter Seats (PRODUCT_SEATS_ID) with 5 initial slots
     env.services()
         .schedule_plan_change(
+            common_domain::actor::Actor::System,
             sub_id,
             TENANT_ID,
             PLAN_VERSION_STARTER_ID,
@@ -1259,6 +1366,7 @@ async fn test_immediate_plan_change_rate_only_to_plan_with_slots(#[future] test_
     let result = env
         .services()
         .apply_plan_change_immediate_at(
+            common_domain::actor::Actor::System,
             sub_id,
             TENANT_ID,
             PLAN_VERSION_STARTER_ID,
@@ -1314,7 +1422,7 @@ async fn test_immediate_plan_change_rate_only_to_plan_with_slots(#[future] test_
 fn build_usage_mock(entries: Vec<(MockUsageDataParams, Decimal)>) -> Arc<MockUsageClient> {
     let mut data = HashMap::new();
     for (params, value) in entries {
-        let period = Period {
+        let period = UsagePeriod {
             start: params.period_start,
             end: params.period_end,
         };
@@ -1363,8 +1471,8 @@ async fn test_immediate_plan_change_usage_temporal_split() {
         (
             MockUsageDataParams {
                 metric_id: METRIC_BANDWIDTH,
-                period_start: jan1,
-                period_end: feb1,
+                period_start: jan1.and_time(NaiveTime::MIN),
+                period_end: feb1.and_time(NaiveTime::MIN),
             },
             Decimal::new(1000, 0), // 1000 units
         ),
@@ -1372,8 +1480,8 @@ async fn test_immediate_plan_change_usage_temporal_split() {
         (
             MockUsageDataParams {
                 metric_id: METRIC_BANDWIDTH,
-                period_start: feb1,
-                period_end: feb15,
+                period_start: feb1.and_time(NaiveTime::MIN),
+                period_end: feb15.and_time(NaiveTime::MIN),
             },
             Decimal::new(50, 0), // 50 units
         ),
@@ -1381,8 +1489,8 @@ async fn test_immediate_plan_change_usage_temporal_split() {
         (
             MockUsageDataParams {
                 metric_id: METRIC_BANDWIDTH,
-                period_start: feb15,
-                period_end: mar1,
+                period_start: feb15.and_time(NaiveTime::MIN),
+                period_end: mar1.and_time(NaiveTime::MIN),
             },
             Decimal::new(200, 0), // 200 units
         ),
@@ -1390,8 +1498,8 @@ async fn test_immediate_plan_change_usage_temporal_split() {
         (
             MockUsageDataParams {
                 metric_id: METRIC_DATABASE_SIZE,
-                period_start: feb15,
-                period_end: mar1,
+                period_start: feb15.and_time(NaiveTime::MIN),
+                period_end: mar1.and_time(NaiveTime::MIN),
             },
             Decimal::new(100, 0), // 100 units
         ),
@@ -1449,6 +1557,7 @@ async fn test_immediate_plan_change_usage_temporal_split() {
     let result = env
         .services()
         .apply_plan_change_immediate_at(
+            common_domain::actor::Actor::System,
             sub_id,
             TENANT_ID,
             PLAN_VERSION_USAGE_BETA_ID,
@@ -1627,8 +1736,8 @@ async fn test_immediate_plan_change_usage_upcoming_invoice() {
         (
             MockUsageDataParams {
                 metric_id: METRIC_BANDWIDTH,
-                period_start: jan1,
-                period_end: feb1,
+                period_start: jan1.and_time(NaiveTime::MIN),
+                period_end: feb1.and_time(NaiveTime::MIN),
             },
             Decimal::new(1000, 0),
         ),
@@ -1636,8 +1745,8 @@ async fn test_immediate_plan_change_usage_upcoming_invoice() {
         (
             MockUsageDataParams {
                 metric_id: METRIC_BANDWIDTH,
-                period_start: feb1,
-                period_end: feb15,
+                period_start: feb1.and_time(NaiveTime::MIN),
+                period_end: feb15.and_time(NaiveTime::MIN),
             },
             Decimal::new(50, 0),
         ),
@@ -1645,8 +1754,8 @@ async fn test_immediate_plan_change_usage_upcoming_invoice() {
         (
             MockUsageDataParams {
                 metric_id: METRIC_BANDWIDTH,
-                period_start: feb15,
-                period_end: mar1,
+                period_start: feb15.and_time(NaiveTime::MIN),
+                period_end: mar1.and_time(NaiveTime::MIN),
             },
             Decimal::new(200, 0),
         ),
@@ -1654,8 +1763,8 @@ async fn test_immediate_plan_change_usage_upcoming_invoice() {
         (
             MockUsageDataParams {
                 metric_id: METRIC_DATABASE_SIZE,
-                period_start: feb15,
-                period_end: mar1,
+                period_start: feb15.and_time(NaiveTime::MIN),
+                period_end: mar1.and_time(NaiveTime::MIN),
             },
             Decimal::new(100, 0),
         ),
@@ -1684,6 +1793,7 @@ async fn test_immediate_plan_change_usage_upcoming_invoice() {
     // --- Feb 15: Immediate plan change Usage Alpha → Usage Beta ---
     env.services()
         .apply_plan_change_immediate_at(
+            common_domain::actor::Actor::System,
             sub_id,
             TENANT_ID,
             PLAN_VERSION_USAGE_BETA_ID,
@@ -2036,6 +2146,7 @@ async fn test_immediate_plan_change_mixed_alpha_to_beta() {
     let result = env
         .services()
         .apply_plan_change_immediate_at(
+            common_domain::actor::Actor::System,
             sub_id,
             TENANT_ID,
             PLAN_VERSION_MIXED_BETA_ID,
@@ -2118,15 +2229,17 @@ async fn test_immediate_plan_change_mixed_alpha_to_beta() {
         .has_cycle_index(2)
         .has_period_start(mar1);
 
-    // Invoice 3: Beta advance + Rec/Arrears temporal split
+    // Invoice 3: Beta advance + Rec/Arrears temporal split (each segment prorated to
+    // the fraction of the [Feb 1, Mar 1] period it was active — 14 of 28 days).
     // Capacity base €80 = 8000 + ExtraRec/Advance €50 = 5000
-    // + Old Rec/Arrears [Feb 1, Feb 15] = 3000 + New Rec/Arrears [Feb 15, Mar 1] = 5000
+    // + Old Rec/Arrears [Feb 1, Feb 15] €30 × 14/28 = 1500
+    // + New Rec/Arrears [Feb 15, Mar 1] €50 × 14/28 = 2500
     let invoices = env.get_invoices(sub_id).await;
     invoices.assert().has_count(4);
     assert_eq!(
         invoices[3].total,
-        8000 + 5000 + 3000 + 5000,
-        "cycle 2 invoice: Beta advance + temporal split Rec/Arrears"
+        8000 + 5000 + 1500 + 2500,
+        "cycle 2 invoice: Beta advance + prorated temporal-split Rec/Arrears"
     );
 }
 
@@ -2182,7 +2295,13 @@ async fn test_scheduled_plan_change_mixed_beta_to_alpha() {
 
     // --- Schedule downgrade to Alpha (end-of-period) ---
     env.services()
-        .schedule_plan_change(sub_id, TENANT_ID, PLAN_VERSION_MIXED_ALPHA_ID, vec![])
+        .schedule_plan_change(
+            common_domain::actor::Actor::System,
+            sub_id,
+            TENANT_ID,
+            PLAN_VERSION_MIXED_ALPHA_ID,
+            vec![],
+        )
         .await
         .expect("schedule_plan_change failed");
 
@@ -2365,6 +2484,7 @@ async fn test_immediate_plan_change_mixed_beta_to_alpha_downgrade() {
     let result = env
         .services()
         .apply_plan_change_immediate_at(
+            common_domain::actor::Actor::System,
             sub_id,
             TENANT_ID,
             PLAN_VERSION_MIXED_ALPHA_ID,
@@ -2423,16 +2543,18 @@ async fn test_immediate_plan_change_mixed_beta_to_alpha_downgrade() {
         .has_cycle_index(2)
         .has_period_start(mar1);
 
-    // Invoice 3: Alpha advance + temporal split Rec/Arrears + NO OneTime
+    // Invoice 3: Alpha advance + temporal split Rec/Arrears (each segment prorated to
+    // 14 of 28 days) + NO OneTime
     // Capacity base €50 = 5000 + ExtraRec/Advance €30 = 3000
-    // + Old Rec/Arrears [Feb 1, Feb 15] = 5000 + New Rec/Arrears [Feb 15, Mar 1] = 3000
-    // OneTime NOT charged (is_first_period = false)
+    // + Old Beta Rec/Arrears [Feb 1, Feb 15] €50 × 14/28 = 2500
+    // + New Alpha Rec/Arrears [Feb 15, Mar 1] €30 × 14/28 = 1500
+    // OneTime NOT charged (plan-change component, not amendment-added)
     let invoices = env.get_invoices(sub_id).await;
     invoices.assert().has_count(4);
     assert_eq!(
         invoices[3].total,
-        5000 + 3000 + 5000 + 3000,
-        "cycle 2: Alpha advance + temporal Rec/Arrears, OneTime NOT charged"
+        5000 + 3000 + 2500 + 1500,
+        "cycle 2: Alpha advance + prorated temporal Rec/Arrears, OneTime NOT charged"
     );
 
     // Verify no OneTime line item on cycle 2 invoice
@@ -2467,8 +2589,8 @@ async fn test_immediate_plan_change_capacity_tier_upgrade() {
     let usage_client = build_usage_mock(vec![(
         MockUsageDataParams {
             metric_id: METRIC_BANDWIDTH,
-            period_start: feb15,
-            period_end: mar1,
+            period_start: feb15.and_time(NaiveTime::MIN),
+            period_end: mar1.and_time(NaiveTime::MIN),
         },
         Decimal::new(600, 0),
     )]);
@@ -2507,6 +2629,7 @@ async fn test_immediate_plan_change_capacity_tier_upgrade() {
     let result = env
         .services()
         .apply_plan_change_immediate_at(
+            common_domain::actor::Actor::System,
             sub_id,
             TENANT_ID,
             PLAN_VERSION_MIXED_CAP_UPG_ID,
@@ -2564,15 +2687,15 @@ async fn test_immediate_plan_change_capacity_tier_upgrade() {
     // Capacity base €120 = 12000
     // Capacity overage: 600 - 500 included = 100 units × €0.02 = 200
     // ExtraRec/Advance €30 = 3000
-    // Old Rec/Arrears [Feb 1, Feb 15] = 3000
-    // New Rec/Arrears [Feb 15, Mar 1] = 3000
+    // Old Rec/Arrears [Feb 1, Feb 15] €30 × 14/28 = 1500 (prorated to its active window)
+    // New Rec/Arrears [Feb 15, Mar 1] €30 × 14/28 = 1500
     // OneTime NOT charged
-    // Total = 12000 + 200 + 3000 + 3000 + 3000 = 21200
+    // Total = 12000 + 200 + 3000 + 1500 + 1500 = 18200
     let invoices = env.get_invoices(sub_id).await;
     invoices.assert().has_count(4);
     assert_eq!(
-        invoices[3].total, 21200,
-        "cycle 2: upgraded capacity (base + overage) + advance + temporal Rec/Arrears"
+        invoices[3].total, 18200,
+        "cycle 2: upgraded capacity (base + overage) + advance + prorated temporal Rec/Arrears"
     );
 
     // Verify overage line uses new config (100 units × €0.02 = 200¢)
@@ -2631,8 +2754,8 @@ async fn test_immediate_plan_change_usage_price_only() {
         (
             MockUsageDataParams {
                 metric_id: METRIC_BANDWIDTH,
-                period_start: jan1,
-                period_end: feb1,
+                period_start: jan1.and_time(NaiveTime::MIN),
+                period_end: feb1.and_time(NaiveTime::MIN),
             },
             Decimal::new(1000, 0), // 1000 units
         ),
@@ -2640,8 +2763,8 @@ async fn test_immediate_plan_change_usage_price_only() {
         (
             MockUsageDataParams {
                 metric_id: METRIC_BANDWIDTH,
-                period_start: feb1,
-                period_end: feb15,
+                period_start: feb1.and_time(NaiveTime::MIN),
+                period_end: feb15.and_time(NaiveTime::MIN),
             },
             Decimal::new(500, 0), // 500 units
         ),
@@ -2649,8 +2772,8 @@ async fn test_immediate_plan_change_usage_price_only() {
         (
             MockUsageDataParams {
                 metric_id: METRIC_BANDWIDTH,
-                period_start: feb15,
-                period_end: mar1,
+                period_start: feb15.and_time(NaiveTime::MIN),
+                period_end: mar1.and_time(NaiveTime::MIN),
             },
             Decimal::new(800, 0), // 800 units
         ),
@@ -2742,6 +2865,7 @@ async fn test_immediate_plan_change_usage_price_only() {
     let result = env
         .services()
         .apply_plan_change_immediate_at(
+            common_domain::actor::Actor::System,
             sub_id,
             TENANT_ID,
             PLAN_VERSION_USAGE_ALPHA_V2_ID,
@@ -2871,6 +2995,7 @@ async fn test_plan_change_during_free_trial(#[future] test_env: TestEnv) {
     let result = env
         .services()
         .apply_plan_change_immediate_at(
+            common_domain::actor::Actor::System,
             sub_id,
             TENANT_ID,
             PLAN_VERSION_STARTER_ID,
@@ -2930,7 +3055,13 @@ async fn test_schedule_plan_change_during_trial(#[future] test_env: TestEnv) {
     // Schedule plan change to Starter at period end
     let event = env
         .services()
-        .schedule_plan_change(sub_id, TENANT_ID, PLAN_VERSION_STARTER_ID, vec![])
+        .schedule_plan_change(
+            common_domain::actor::Actor::System,
+            sub_id,
+            TENANT_ID,
+            PLAN_VERSION_STARTER_ID,
+            vec![],
+        )
         .await
         .expect("schedule during trial should succeed");
 
@@ -2964,11 +3095,11 @@ async fn test_plan_change_replaces_pending_cancellation(#[future] test_env: Test
     // Schedule cancellation at end of period
     env.services()
         .cancel_subscription(
+            common_domain::actor::Actor::System,
             sub_id,
             TENANT_ID,
             Some("want to cancel".to_string()),
             CancellationEffectiveAt::EndOfBillingPeriod,
-            USER_ID,
         )
         .await
         .expect("cancel_subscription failed");
@@ -2979,7 +3110,13 @@ async fn test_plan_change_replaces_pending_cancellation(#[future] test_env: Test
 
     // Now customer changes mind: schedule plan change to Pro (should replace cancellation)
     env.services()
-        .schedule_plan_change(sub_id, TENANT_ID, PLAN_VERSION_PRO_ID, vec![])
+        .schedule_plan_change(
+            common_domain::actor::Actor::System,
+            sub_id,
+            TENANT_ID,
+            PLAN_VERSION_PRO_ID,
+            vec![],
+        )
         .await
         .expect("plan change should replace pending cancellation");
 
@@ -3043,11 +3180,11 @@ async fn test_immediate_plan_change_cancels_pending_cancellation(#[future] test_
     // Schedule cancellation
     env.services()
         .cancel_subscription(
+            common_domain::actor::Actor::System,
             sub_id,
             TENANT_ID,
             None,
             CancellationEffectiveAt::EndOfBillingPeriod,
-            USER_ID,
         )
         .await
         .expect("cancel_subscription failed");
@@ -3055,7 +3192,14 @@ async fn test_immediate_plan_change_cancels_pending_cancellation(#[future] test_
     // Immediate plan change should override cancellation
     let result = env
         .services()
-        .apply_plan_change_immediate_at(sub_id, TENANT_ID, PLAN_VERSION_PRO_ID, vec![], change_date)
+        .apply_plan_change_immediate_at(
+            common_domain::actor::Actor::System,
+            sub_id,
+            TENANT_ID,
+            PLAN_VERSION_PRO_ID,
+            vec![],
+            change_date,
+        )
         .await
         .expect("immediate plan change should succeed despite pending cancellation");
 
@@ -3120,7 +3264,14 @@ async fn test_sequential_immediate_plan_changes(#[future] test_env: TestEnv) {
     // --- Jan 10: Starter → Pro (upgrade) ---
     let result1 = env
         .services()
-        .apply_plan_change_immediate_at(sub_id, TENANT_ID, PLAN_VERSION_PRO_ID, vec![], jan10)
+        .apply_plan_change_immediate_at(
+            common_domain::actor::Actor::System,
+            sub_id,
+            TENANT_ID,
+            PLAN_VERSION_PRO_ID,
+            vec![],
+            jan10,
+        )
         .await
         .expect("first plan change (Starter→Pro) failed");
 
@@ -3146,7 +3297,14 @@ async fn test_sequential_immediate_plan_changes(#[future] test_env: TestEnv) {
     // --- Jan 20: Pro → Starter (downgrade) ---
     let _result2 = env
         .services()
-        .apply_plan_change_immediate_at(sub_id, TENANT_ID, PLAN_VERSION_STARTER_ID, vec![], jan20)
+        .apply_plan_change_immediate_at(
+            common_domain::actor::Actor::System,
+            sub_id,
+            TENANT_ID,
+            PLAN_VERSION_STARTER_ID,
+            vec![],
+            jan20,
+        )
         .await
         .expect("second plan change (Pro→Starter) failed");
 
@@ -3201,19 +3359,37 @@ async fn test_sequential_scheduled_plan_changes(#[future] test_env: TestEnv) {
 
     // Schedule 1: LeetCode → Starter
     env.services()
-        .schedule_plan_change(sub_id, TENANT_ID, PLAN_VERSION_STARTER_ID, vec![])
+        .schedule_plan_change(
+            common_domain::actor::Actor::System,
+            sub_id,
+            TENANT_ID,
+            PLAN_VERSION_STARTER_ID,
+            vec![],
+        )
         .await
         .expect("schedule 1 failed");
 
     // Schedule 2: replaces with → Pro
     env.services()
-        .schedule_plan_change(sub_id, TENANT_ID, PLAN_VERSION_PRO_ID, vec![])
+        .schedule_plan_change(
+            common_domain::actor::Actor::System,
+            sub_id,
+            TENANT_ID,
+            PLAN_VERSION_PRO_ID,
+            vec![],
+        )
         .await
         .expect("schedule 2 failed");
 
     // Schedule 3: replaces with → Starter
     env.services()
-        .schedule_plan_change(sub_id, TENANT_ID, PLAN_VERSION_STARTER_ID, vec![])
+        .schedule_plan_change(
+            common_domain::actor::Actor::System,
+            sub_id,
+            TENANT_ID,
+            PLAN_VERSION_STARTER_ID,
+            vec![],
+        )
         .await
         .expect("schedule 3 failed");
 
@@ -3271,75 +3447,69 @@ async fn test_plan_change_monthly_to_annual(#[future] test_env: TestEnv) {
     {
         let mut conn = env.conn().await;
         use diesel_async::AsyncConnection;
-        use diesel_async::scoped_futures::ScopedFutureExt;
-        conn.transaction(|tx| {
-            async move {
-                use diesel_models::errors::DatabaseErrorContainer;
-                use diesel_models::plan_versions::PlanVersionRowNew;
-                use diesel_models::plans::{PlanRowNew, PlanRowPatch};
+        conn.transaction(async |tx| {
+            use diesel_models::errors::DatabaseErrorContainer;
+            use diesel_models::plan_versions::PlanVersionRowNew;
+            use diesel_models::plans::{PlanRowNew, PlanRowPatch};
 
-                PlanRowNew {
-                    id: annual_plan_id,
-                    name: "Annual Rate".to_string(),
-                    description: None,
-                    created_by: USER_ID,
-                    tenant_id: TENANT_ID,
-                    product_family_id: PRODUCT_FAMILY_ID,
-                    plan_type: diesel_models::enums::PlanTypeEnum::Standard,
-                    status: diesel_models::enums::PlanStatusEnum::Active,
-                }
-                .insert(tx)
-                .await?;
-
-                PlanVersionRowNew {
-                    id: annual_plan_version_id,
-                    is_draft_version: false,
-                    plan_id: annual_plan_id,
-                    version: 1,
-                    trial_duration_days: None,
-                    tenant_id: TENANT_ID,
-                    period_start_day: None,
-                    net_terms: 0,
-                    currency: "EUR".to_string(),
-                    billing_cycles: None,
-                    created_by: USER_ID,
-                    trialing_plan_id: None,
-                    trial_is_free: true,
-                    uses_product_pricing: true,
-                }
-                .insert(tx)
-                .await?;
-
-                PlanRowPatch {
-                    id: annual_plan_id,
-                    tenant_id: TENANT_ID,
-                    name: None,
-                    description: None,
-                    active_version_id: Some(Some(annual_plan_version_id)),
-                    draft_version_id: None,
-                    self_service_rank: None,
-                }
-                .update(tx)
-                .await?;
-
-                PlanSeed::seed_components(
-                    tx,
-                    annual_plan_version_id,
-                    &[SeedComp::rate(
-                        annual_comp_rate_id,
-                        "Platform Fee",
-                        PRODUCT_PLATFORM_FEE_ID,
-                        annual_price_rate_id,
-                        DieselBillingPeriodEnum::Annual,
-                        Decimal::new(29000, 2), // €290/year
-                    )],
-                    "EUR",
-                )
-                .await?;
-
-                Ok::<(), DatabaseErrorContainer>(())
+            PlanRowNew {
+                id: annual_plan_id,
+                name: "Annual Rate".to_string(),
+                description: None,
+                tenant_id: TENANT_ID,
+                product_family_id: PRODUCT_FAMILY_ID,
+                plan_type: diesel_models::enums::PlanTypeEnum::Standard,
+                status: diesel_models::enums::PlanStatusEnum::Active,
             }
-            .scope_boxed()
+            .insert(tx)
+            .await?;
+
+            PlanVersionRowNew {
+                id: annual_plan_version_id,
+                is_draft_version: false,
+                plan_id: annual_plan_id,
+                version: 1,
+                trial_duration_days: None,
+                tenant_id: TENANT_ID,
+                period_start_day: None,
+                net_terms: 0,
+                currency: "EUR".to_string(),
+                billing_cycles: None,
+                trialing_plan_id: None,
+                trial_is_free: true,
+                uses_product_pricing: true,
+            }
+            .insert(tx)
+            .await?;
+
+            PlanRowPatch {
+                id: annual_plan_id,
+                tenant_id: TENANT_ID,
+                name: None,
+                description: None,
+                active_version_id: Some(Some(annual_plan_version_id)),
+                draft_version_id: None,
+                self_service_rank: None,
+            }
+            .update(tx)
+            .await?;
+
+            PlanSeed::seed_components(
+                tx,
+                annual_plan_version_id,
+                &[SeedComp::rate(
+                    annual_comp_rate_id,
+                    "Platform Fee",
+                    PRODUCT_PLATFORM_FEE_ID,
+                    annual_price_rate_id,
+                    DieselBillingPeriodEnum::Annual,
+                    Decimal::new(29000, 2), // €290/year
+                )],
+                "EUR",
+            )
+            .await?;
+
+            Ok::<(), DatabaseErrorContainer>(())
         })
         .await
         .expect("seed annual plan");
@@ -3364,6 +3534,7 @@ async fn test_plan_change_monthly_to_annual(#[future] test_env: TestEnv) {
     let _result = env
         .services()
         .apply_plan_change_immediate_at(
+            common_domain::actor::Actor::System,
             sub_id,
             TENANT_ID,
             annual_plan_version_id,
@@ -3455,6 +3626,7 @@ async fn test_plan_change_during_free_trial_immediate(#[future] test_env: TestEn
     let result = env
         .services()
         .apply_plan_change_immediate_at(
+            common_domain::actor::Actor::System,
             sub_id,
             TENANT_ID,
             PLAN_VERSION_STARTER_ID,
@@ -3565,6 +3737,7 @@ async fn test_plan_change_to_trial_plan_no_trial_applied(#[future] test_env: Tes
     let result = env
         .services()
         .apply_plan_change_immediate_at(
+            common_domain::actor::Actor::System,
             sub_id,
             TENANT_ID,
             PLAN_VERSION_PAID_FREE_TRIAL_ID,

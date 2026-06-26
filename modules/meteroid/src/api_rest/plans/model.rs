@@ -1,3 +1,4 @@
+use crate::api_rest::entitlements::model::Entitlement;
 use crate::api_rest::model::PaginatedRequest;
 use crate::api_rest::model::PaginationResponse;
 use chrono::NaiveDateTime;
@@ -89,6 +90,9 @@ pub struct Plan {
     pub price_components: Vec<PriceComponent>,
 
     pub available_parameters: AvailableParameters,
+
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub entitlements: Vec<Entitlement>,
 }
 
 #[derive(Clone, ToSchema, serde::Serialize, serde::Deserialize, Debug)]

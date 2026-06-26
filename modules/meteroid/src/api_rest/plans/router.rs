@@ -1,6 +1,12 @@
 use super::AppState;
 
 use crate::api_rest::QueryParams;
+
+use crate::api_rest::error::RestErrorResponse;
+use crate::api_rest::model::{PaginationExt, validate_order_by};
+use crate::api_rest::plans::mapping;
+use crate::api_rest::plans::model::*;
+use crate::errors::RestApiError;
 use axum::extract::{Path, Query, State};
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
@@ -13,12 +19,6 @@ use meteroid_store::domain::{
     PlanVersionNewInternal,
 };
 use meteroid_store::repositories::PlansInterface;
-
-use crate::api_rest::error::RestErrorResponse;
-use crate::api_rest::model::{PaginationExt, validate_order_by};
-use crate::api_rest::plans::mapping;
-use crate::api_rest::plans::model::*;
-use crate::errors::RestApiError;
 
 // ── List plans ─────────────────────────────────────────────────
 
@@ -188,7 +188,6 @@ pub(crate) async fn create_plan(
         plan: PlanNew {
             name: payload.name,
             description: payload.description,
-            created_by: authorized_state.actor_id,
             tenant_id: authorized_state.tenant_id,
             product_family_id: payload.product_family_id,
             plan_type: payload.plan_type.into(),
@@ -205,13 +204,14 @@ pub(crate) async fn create_plan(
             currency: Some(payload.currency),
             billing_cycles: billing.billing_cycles,
             trial,
+            entitlements: vec![],
         },
         price_components: components,
     };
 
     let mut full_plan = app_state
         .store
-        .insert_plan(full_plan_new)
+        .insert_plan(authorized_state.as_actor(), full_plan_new)
         .await
         .map_err(|e| {
             log::error!("Error creating plan: {e}");
@@ -222,14 +222,17 @@ pub(crate) async fn create_plan(
     if let Some(rank) = payload.self_service_rank {
         app_state
             .store
-            .patch_published_plan(PlanPatch {
-                id: full_plan.plan.id,
-                tenant_id: authorized_state.tenant_id,
-                name: None,
-                description: None,
-                active_version_id: None,
-                self_service_rank: Some(Some(rank)),
-            })
+            .patch_published_plan(
+                authorized_state.as_actor(),
+                PlanPatch {
+                    id: full_plan.plan.id,
+                    tenant_id: authorized_state.tenant_id,
+                    name: None,
+                    description: None,
+                    active_version_id: None,
+                    self_service_rank: Some(Some(rank)),
+                },
+            )
             .await
             .map_err(|e| {
                 log::error!("Error setting self_service_rank: {e}");
@@ -237,6 +240,8 @@ pub(crate) async fn create_plan(
             })?;
         full_plan.plan.self_service_rank = Some(rank);
     }
+
+    let created_entitlements = std::mem::take(&mut full_plan.version.entitlements);
 
     // Attach add-ons
     if !payload.add_ons.is_empty() {
@@ -250,7 +255,7 @@ pub(crate) async fn create_plan(
     }
 
     // Re-fetch to get full resolved data including products
-    let fp = app_state
+    let mut fp = app_state
         .store
         .get_full_plan(
             full_plan.plan.id,
@@ -266,6 +271,8 @@ pub(crate) async fn create_plan(
             log::error!("Error re-fetching plan: {e}");
             RestApiError::from(e)
         })?;
+
+    fp.version.entitlements = created_entitlements;
 
     Ok((
         StatusCode::CREATED,
@@ -345,9 +352,9 @@ pub(crate) async fn replace_plan(
     let fp = app_state
         .store
         .replace_plan_version(
+            authorized_state.as_actor(),
             plan_id,
             authorized_state.tenant_id,
-            authorized_state.actor_id,
             payload.name,
             payload.description,
             PlanVersionNewInternal {
@@ -357,6 +364,7 @@ pub(crate) async fn replace_plan(
                 currency: Some(payload.currency),
                 billing_cycles: billing.billing_cycles,
                 trial,
+                entitlements: vec![],
             },
             components,
             add_ons,
@@ -406,14 +414,17 @@ pub(crate) async fn patch_plan(
 ) -> Result<impl IntoResponse, RestApiError> {
     app_state
         .store
-        .patch_published_plan(PlanPatch {
-            id: plan_id,
-            tenant_id: authorized_state.tenant_id,
-            name: payload.name,
-            description: payload.description,
-            active_version_id: None,
-            self_service_rank: payload.self_service_rank,
-        })
+        .patch_published_plan(
+            authorized_state.as_actor(),
+            PlanPatch {
+                id: plan_id,
+                tenant_id: authorized_state.tenant_id,
+                name: payload.name,
+                description: payload.description,
+                active_version_id: None,
+                self_service_rank: payload.self_service_rank,
+            },
+        )
         .await
         .map_err(|e| {
             log::error!("Error patching plan: {e}");
@@ -506,9 +517,9 @@ pub(crate) async fn publish_plan(
     app_state
         .store
         .publish_plan_version(
+            authorized_state.as_actor(),
             draft_version.id,
             authorized_state.tenant_id,
-            authorized_state.actor_id,
         )
         .await
         .map_err(|e| {
@@ -561,7 +572,11 @@ pub(crate) async fn archive_plan(
 ) -> Result<impl IntoResponse, RestApiError> {
     app_state
         .store
-        .archive_plan(plan_id, authorized_state.tenant_id)
+        .archive_plan(
+            authorized_state.as_actor(),
+            plan_id,
+            authorized_state.tenant_id,
+        )
         .await
         .map_err(|e| {
             log::error!("Error archiving plan: {e}");

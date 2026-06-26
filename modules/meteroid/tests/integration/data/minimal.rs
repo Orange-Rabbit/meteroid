@@ -2,14 +2,13 @@ use super::ids;
 use chrono::{NaiveDate, NaiveDateTime};
 use common_domain::country::CountryCode;
 use diesel_async::AsyncConnection;
-use diesel_async::scoped_futures::ScopedFutureExt;
 use diesel_models::api_tokens::ApiTokenRowNew;
 use diesel_models::enums::{OrganizationUserRole, TenantEnvironmentEnum};
 use diesel_models::errors::DatabaseErrorContainer;
 use diesel_models::historical_rates_from_usd::HistoricalRatesFromUsdRowNew;
 use diesel_models::invoicing_entities::InvoicingEntityRow;
 use diesel_models::organization_members::OrganizationMemberRow;
-use diesel_models::organizations::{OrganizationRow, OrganizationRowNew};
+use diesel_models::organizations::OrganizationRowNew;
 use diesel_models::product_families::ProductFamilyRowNew;
 use diesel_models::tenants::TenantRowNew;
 use diesel_models::users::UserRowNew;
@@ -22,7 +21,7 @@ pub async fn run_minimal_seed(pool: &PgPool) {
         .await
         .expect("couldn't get db connection from pool");
 
-    conn.transaction(|tx| async move {
+    conn.transaction(async |tx| {
 
         // create organization
         OrganizationRowNew {
@@ -32,12 +31,6 @@ pub async fn run_minimal_seed(pool: &PgPool) {
             default_country: CountryCode::from_str("FR").expect("failed to parse country code"),
             is_express: false,
         }.insert(tx).await?;
-
-        OrganizationRow::update_invite_link(
-            tx,
-            ids::ORGANIZATION_ID,
-            &"fake-invite-link".to_string(),
-        ).await?;
 
         // create user
         UserRowNew {
@@ -76,7 +69,6 @@ pub async fn run_minimal_seed(pool: &PgPool) {
             id: ids::API_TOKEN_ID,
             name: "token-pD_".to_string(),
             created_at: NaiveDateTime::from_str("2024-01-03T00:00:00").expect("failed to parse api token date"),
-            created_by: ids::USER_ID,
             tenant_id: ids::TENANT_ID,
             hash: "$argon2id$v=19$m=19456,t=2,p=1$98CkbdqB8KNdlqryCBIx+g$nhTanF/4QsVnpPFvPHzshLPOGd7btYxXfq2UWB0xkiU".to_string(),
             hint: "pv_sand_9XzH...AbBG".to_string(),
@@ -109,6 +101,7 @@ pub async fn run_minimal_seed(pool: &PgPool) {
             direct_debit_provider_id: None,
             bank_account_id: None,
             tax_resolver: diesel_models::enums::TaxResolverEnum::None,
+            consolidate_recurring_invoices: false,
         }.insert(tx).await?;
 
         HistoricalRatesFromUsdRowNew::insert_batch(tx, vec![
@@ -159,5 +152,5 @@ pub async fn run_minimal_seed(pool: &PgPool) {
         ]).await?;
 
         Ok::<(), DatabaseErrorContainer>(())
-    } .scope_boxed()).await.unwrap();
+    }).await.unwrap();
 }

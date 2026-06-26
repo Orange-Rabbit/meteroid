@@ -1,13 +1,10 @@
-import {
-  createConnectQueryKey,
-  createProtobufSafeUpdater,
-  useMutation,
-} from '@connectrpc/connect-query'
+import { create } from '@bufbuild/protobuf';
+import { createConnectQueryKey, useMutation } from '@connectrpc/connect-query';
 import { useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 
 import { useZodForm } from '@/hooks/useZodForm'
-import { Address, Customer } from '@/rpc/api/customers/v1/models_pb'
+import { AddressSchema, Customer } from '@/rpc/api/customers/v1/models_pb';
 import { getCheckout } from '@/rpc/portal/checkout/v1/checkout-PortalCheckoutService_connectquery'
 import { updateCustomer } from '@/rpc/portal/shared/v1/shared-PortalSharedService_connectquery'
 
@@ -27,16 +24,12 @@ export const BillingInfo = ({ customer, isEditing, setIsEditing }: BillingInfoPr
   const updateBillingInfoMut = useMutation(updateCustomer, {
     onSuccess: res => {
       if (res.customer) {
-        queryClient.setQueryData(
-          createConnectQueryKey(getCheckout),
-          createProtobufSafeUpdater(getCheckout, prev => ({
-            checkout: {
-              ...prev?.checkout,
-              customer: res.customer,
-            },
-            checkoutType: prev?.checkoutType,
-          }))
-        )
+        queryClient.invalidateQueries({
+          queryKey: createConnectQueryKey({
+            schema: getCheckout,
+            cardinality: undefined
+          })
+        })
       }
 
       toast.success('Billing information updated successfully')
@@ -74,7 +67,7 @@ export const BillingInfo = ({ customer, isEditing, setIsEditing }: BillingInfoPr
 
   const onSubmit = async (values: BillingInfoFormValues) => {
     // Create new Address object
-    const updatedAddress = new Address({
+    const updatedAddress = create(AddressSchema, {
       line1: values.line1,
       line2: values.line2,
       city: values.city,

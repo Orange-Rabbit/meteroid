@@ -1,3 +1,5 @@
+use crate::domain::entitlements::EffectiveEntitlement;
+use crate::domain::entity_activity::Actor;
 use crate::domain::{CheckoutSession, Coupon};
 use crate::errors::StoreError;
 use crate::repositories::coupons::CouponInterface;
@@ -20,6 +22,7 @@ pub mod clients;
 mod connectors;
 mod credits;
 mod edge;
+mod entitlements;
 pub mod invoice_lines;
 mod invoices;
 mod lifecycle;
@@ -80,6 +83,37 @@ impl ServicesEdge {
 
     pub fn usage_clients(&self) -> Arc<dyn UsageClient> {
         self.services.usage_client.clone()
+    }
+
+    pub async fn get_effective_entitlements(
+        &self,
+        customer_id: CustomerId,
+        tenant_id: TenantId,
+    ) -> StoreResult<Vec<EffectiveEntitlement>> {
+        self.services
+            .get_effective_entitlements(customer_id, tenant_id)
+            .await
+    }
+
+    pub async fn get_effective_entitlement_for_feature(
+        &self,
+        customer_id: CustomerId,
+        tenant_id: TenantId,
+        feature_id: common_domain::ids::FeatureId,
+    ) -> StoreResult<Option<EffectiveEntitlement>> {
+        self.services
+            .get_effective_entitlement_for_feature(customer_id, tenant_id, feature_id)
+            .await
+    }
+
+    pub async fn get_effective_entitlements_for_subscription(
+        &self,
+        subscription_id: SubscriptionId,
+        tenant_id: TenantId,
+    ) -> StoreResult<Vec<EffectiveEntitlement>> {
+        self.services
+            .get_effective_entitlements_for_subscription(subscription_id, tenant_id)
+            .await
     }
 
     pub async fn update_subscription_slots(
@@ -148,6 +182,7 @@ impl ServicesEdge {
 
     pub async fn mark_invoice_as_paid(
         &self,
+        actor: Actor,
         tenant_id: TenantId,
         invoice_id: InvoiceId,
         total_amount: Decimal,
@@ -155,12 +190,20 @@ impl ServicesEdge {
         reference: Option<String>,
     ) -> StoreResult<crate::domain::DetailedInvoice> {
         self.services
-            .mark_invoice_as_paid(tenant_id, invoice_id, total_amount, payment_date, reference)
+            .mark_invoice_as_paid(
+                actor,
+                tenant_id,
+                invoice_id,
+                total_amount,
+                payment_date,
+                reference,
+            )
             .await
     }
 
     pub async fn add_manual_payment_transaction(
         &self,
+        actor: Actor,
         tenant_id: TenantId,
         invoice_id: InvoiceId,
         amount: Decimal,
@@ -168,7 +211,14 @@ impl ServicesEdge {
         reference: Option<String>,
     ) -> StoreResult<PaymentTransaction> {
         self.services
-            .add_manual_payment_transaction(tenant_id, invoice_id, amount, payment_date, reference)
+            .add_manual_payment_transaction(
+                actor,
+                tenant_id,
+                invoice_id,
+                amount,
+                payment_date,
+                reference,
+            )
             .await
     }
 

@@ -1,18 +1,23 @@
 use crate::domain::add_ons::{AddOn, AddOnNew, AddOnPatch};
+use crate::domain::entitlements::{Entitlement, EntitlementSpec};
+use crate::domain::entity_activity::Actor;
 use crate::domain::enums::FeeTypeEnum;
 use crate::domain::outbox_event::OutboxEvent;
 use crate::domain::price_components::{PriceComponentNewInternal, PriceEntry, ProductRef};
 use crate::domain::{PaginatedVec, PaginationRequest, Price};
 use crate::errors::StoreError;
+use crate::repositories::entitlements::insert_entitlement_specs;
 use crate::repositories::price_components::resolve_component_internal;
 use crate::{Store, StoreResult};
-use common_domain::ids::{AddOnId, BaseId, PlanVersionId, ProductFamilyId, TenantId};
-use diesel_async::scoped_futures::ScopedFutureExt;
+use common_domain::ids::{
+    AddOnId, BaseId, EntitlementEntityId, PlanVersionId, ProductFamilyId, TenantId,
+};
 use diesel_models::add_ons::{AddOnRow, AddOnRowNew, AddOnRowPatch};
+use diesel_models::entitlements::EntitlementRow;
 use diesel_models::prices::PriceRow;
 use diesel_models::products::ProductRow;
 use error_stack::Report;
-use uuid::Uuid;
+use scoped_futures::ScopedFutureExt;
 
 #[async_trait::async_trait]
 pub trait AddOnInterface {
@@ -36,7 +41,7 @@ pub trait AddOnInterface {
 
     async fn get_add_on_by_id(&self, tenant_id: TenantId, id: AddOnId) -> StoreResult<AddOn>;
 
-    async fn create_add_on(&self, add_on: AddOnNew) -> StoreResult<AddOn>;
+    async fn create_add_on(&self, actor: Actor, add_on: AddOnNew) -> StoreResult<AddOn>;
 
     #[allow(clippy::too_many_arguments)]
     async fn create_add_on_from_ref(
@@ -48,18 +53,23 @@ pub trait AddOnInterface {
         self_serviceable: bool,
         max_instances_per_subscription: Option<i32>,
         tenant_id: TenantId,
-        created_by: Uuid,
         product_family_id: ProductFamilyId,
+        entitlements: Vec<EntitlementSpec>,
     ) -> StoreResult<AddOn>;
 
     async fn update_add_on(
         &self,
+        actor: Actor,
         patch: AddOnPatch,
         price_entry: Option<PriceEntry>,
-        created_by: Uuid,
     ) -> StoreResult<AddOn>;
 
-    async fn archive_add_on(&self, id: AddOnId, tenant_id: TenantId) -> StoreResult<()>;
+    async fn archive_add_on(
+        &self,
+        actor: Actor,
+        id: AddOnId,
+        tenant_id: TenantId,
+    ) -> StoreResult<()>;
     async fn unarchive_add_on(&self, id: AddOnId, tenant_id: TenantId) -> StoreResult<()>;
 }
 
@@ -75,8 +85,8 @@ pub(crate) async fn enrich_add_ons(
         return Ok(vec![]);
     }
 
-    let product_ids: Vec<_> = rows.iter().map(|r| r.product_id).collect();
-    let price_ids: Vec<_> = rows.iter().map(|r| r.price_id).collect();
+    let (product_ids, price_ids): (Vec<_>, Vec<_>) =
+        rows.iter().map(|r| (r.product_id, r.price_id)).unzip();
 
     let product_rows = ProductRow::list_by_ids(conn, &product_ids, tenant_id)
         .await
@@ -94,6 +104,21 @@ pub(crate) async fn enrich_add_ons(
         })
         .collect::<Result<HashMap<_, _>, _>>()?;
 
+    let add_on_entities: Vec<EntitlementEntityId> = rows
+        .iter()
+        .map(|r| EntitlementEntityId::AddOn(r.id))
+        .collect();
+    let entitlement_rows =
+        EntitlementRow::list_by_entity_ids(conn, tenant_id, &add_on_entities, None)
+            .await
+            .map_err(Into::<Report<StoreError>>::into)?;
+    let mut entitlements_by_entity: HashMap<uuid::Uuid, Vec<Entitlement>> = HashMap::new();
+    for row in entitlement_rows {
+        let entity_id = row.entity_id;
+        let e: Entitlement = row.try_into()?;
+        entitlements_by_entity.entry(entity_id).or_default().push(e);
+    }
+
     let add_ons = rows
         .into_iter()
         .map(|row| {
@@ -102,10 +127,12 @@ pub(crate) async fn enrich_add_ons(
             let fee_structure =
                 product.and_then(|p| serde_json::from_value(p.fee_structure.clone()).ok());
             let price = prices.get(&row.price_id).cloned();
+            let entitlements = entitlements_by_entity.remove(&*row.id).unwrap_or_default();
             let mut addon: AddOn = row.into();
             addon.fee_type = fee_type;
             addon.fee_structure = fee_structure;
             addon.price = price;
+            addon.entitlements = entitlements;
             addon
         })
         .collect();
@@ -176,7 +203,7 @@ impl AddOnInterface for Store {
             .ok_or_else(|| Report::new(StoreError::InvalidArgument("Add-on not found".into())))
     }
 
-    async fn create_add_on(&self, add_on: AddOnNew) -> StoreResult<AddOn> {
+    async fn create_add_on(&self, actor: Actor, add_on: AddOnNew) -> StoreResult<AddOn> {
         let mut conn = self.get_conn().await?;
 
         let price_row =
@@ -191,9 +218,11 @@ impl AddOnInterface for Store {
         }
 
         let tenant_id = add_on.tenant_id;
+        let entitlements = add_on.entitlements.clone();
         let row_new: AddOnRowNew = add_on.into();
 
         self.transaction_with(&mut conn, |conn| {
+            let actor = &actor;
             async move {
                 let row = row_new
                     .insert(conn)
@@ -201,13 +230,25 @@ impl AddOnInterface for Store {
                     .map_err(Into::<Report<StoreError>>::into)?;
 
                 let mut enriched = enrich_add_ons(conn, vec![row], tenant_id).await?;
-                let addon = enriched.pop().ok_or_else(|| {
+                let mut addon = enriched.pop().ok_or_else(|| {
                     Report::new(StoreError::InvalidArgument("Add-on not found".into()))
                 })?;
 
-                self.internal
-                    .insert_outbox_events_tx(
+                if !entitlements.is_empty() {
+                    addon.entitlements = insert_entitlement_specs(
                         conn,
+                        entitlements,
+                        EntitlementEntityId::AddOn(addon.id),
+                        tenant_id,
+                    )
+                    .await?;
+                }
+
+                self.internal
+                    .record_outbox_batch_tx(
+                        conn,
+                        tenant_id,
+                        actor,
                         vec![OutboxEvent::add_on_created(addon.clone().into())],
                     )
                     .await?;
@@ -229,8 +270,8 @@ impl AddOnInterface for Store {
         self_serviceable: bool,
         max_instances_per_subscription: Option<i32>,
         tenant_id: TenantId,
-        created_by: Uuid,
         product_family_id: ProductFamilyId,
+        entitlements: Vec<EntitlementSpec>,
     ) -> StoreResult<AddOn> {
         let internal = PriceComponentNewInternal {
             name: name.clone(),
@@ -259,7 +300,6 @@ impl AddOnInterface for Store {
                     conn,
                     &internal,
                     tenant_id,
-                    created_by,
                     product_family_id,
                     &currency,
                     true,
@@ -289,9 +329,21 @@ impl AddOnInterface for Store {
                     .map_err(Into::<Report<StoreError>>::into)?;
 
                 let mut enriched = enrich_add_ons(conn, vec![row], tenant_id).await?;
-                enriched.pop().ok_or_else(|| {
+                let mut addon = enriched.pop().ok_or_else(|| {
                     Report::new(StoreError::InvalidArgument("Add-on not found".into()))
-                })
+                })?;
+
+                if !entitlements.is_empty() {
+                    addon.entitlements = insert_entitlement_specs(
+                        conn,
+                        entitlements,
+                        EntitlementEntityId::AddOn(addon.id),
+                        tenant_id,
+                    )
+                    .await?;
+                }
+
+                Ok(addon)
             }
             .scope_boxed()
         })
@@ -300,14 +352,15 @@ impl AddOnInterface for Store {
 
     async fn update_add_on(
         &self,
+        actor: Actor,
         patch: AddOnPatch,
         price_entry: Option<PriceEntry>,
-        created_by: Uuid,
     ) -> StoreResult<AddOn> {
         let tenant_id = patch.tenant_id;
         let add_on_id = patch.id;
 
         self.transaction(|conn| {
+            let actor = &actor;
             async move {
                 let existing = AddOnRow::get_by_id(conn, tenant_id, add_on_id)
                     .await
@@ -362,7 +415,6 @@ impl AddOnInterface for Store {
                                 currency: input.currency,
                                 pricing: pricing_json,
                                 tenant_id,
-                                created_by,
                                 catalog: true,
                             }
                             .insert(conn)
@@ -389,8 +441,10 @@ impl AddOnInterface for Store {
                 })?;
 
                 self.internal
-                    .insert_outbox_events_tx(
+                    .record_outbox_batch_tx(
                         conn,
+                        tenant_id,
+                        actor,
                         vec![OutboxEvent::add_on_updated(addon.clone().into())],
                     )
                     .await?;
@@ -402,10 +456,16 @@ impl AddOnInterface for Store {
         .await
     }
 
-    async fn archive_add_on(&self, id: AddOnId, tenant_id: TenantId) -> StoreResult<()> {
+    async fn archive_add_on(
+        &self,
+        actor: Actor,
+        id: AddOnId,
+        tenant_id: TenantId,
+    ) -> StoreResult<()> {
         let mut conn = self.get_conn().await?;
 
         self.transaction_with(&mut conn, |conn| {
+            let actor = &actor;
             async move {
                 AddOnRow::archive(conn, id, tenant_id)
                     .await
@@ -417,7 +477,12 @@ impl AddOnInterface for Store {
 
                 let addon: AddOn = row.into();
                 self.internal
-                    .insert_outbox_events_tx(conn, vec![OutboxEvent::add_on_archived(addon.into())])
+                    .record_outbox_batch_tx(
+                        conn,
+                        tenant_id,
+                        actor,
+                        vec![OutboxEvent::add_on_archived(addon.into())],
+                    )
                     .await?;
 
                 Ok(())

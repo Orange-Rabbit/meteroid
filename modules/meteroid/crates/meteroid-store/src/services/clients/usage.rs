@@ -1,7 +1,7 @@
 use crate::StoreResult;
-use crate::domain::{BillableMetric, Period};
+use crate::domain::{BillableMetric, UsagePeriod};
 use crate::errors::StoreError;
-use chrono::NaiveDate;
+use chrono::{NaiveDate, NaiveDateTime};
 use common_domain::ids::{BillableMetricId, CustomerId, TenantId};
 use error_stack::bail;
 use rust_decimal::Decimal;
@@ -10,7 +10,7 @@ use std::collections::HashMap;
 #[derive(Debug, Clone)]
 pub struct UsageData {
     pub data: Vec<GroupedUsageData>,
-    pub period: Period,
+    pub period: UsagePeriod,
 }
 
 #[derive(Debug, Clone)]
@@ -22,7 +22,7 @@ pub struct GroupedUsageData {
 #[derive(Debug, Clone)]
 pub struct WindowedUsageData {
     pub data: Vec<WindowedUsagePoint>,
-    pub period: Period,
+    pub period: UsagePeriod,
 }
 
 #[derive(Debug, Clone)]
@@ -81,15 +81,23 @@ pub trait UsageClient: Send + Sync {
         tenant_id: &TenantId,
         customer_id: &CustomerId,
         metric: &BillableMetric,
-        period: Period,
+        period: UsagePeriod,
     ) -> StoreResult<UsageData>;
+
+    async fn fetch_total_usage(
+        &self,
+        tenant_id: &TenantId,
+        customer_id: &CustomerId,
+        metric: &BillableMetric,
+        period: UsagePeriod,
+    ) -> StoreResult<Decimal>;
 
     async fn fetch_windowed_usage(
         &self,
         tenant_id: &TenantId,
         customer_id: &CustomerId,
         metric: &BillableMetric,
-        period: Period,
+        period: UsagePeriod,
     ) -> StoreResult<WindowedUsageData>;
 
     /// Fetch aggregated usage for a metric over a period.
@@ -99,7 +107,7 @@ pub trait UsageClient: Send + Sync {
         tenant_id: &TenantId,
         customer_id: Option<&CustomerId>,
         metric: &BillableMetric,
-        period: Period,
+        period: UsagePeriod,
     ) -> StoreResult<UsageData>;
 
     async fn search_events(
@@ -117,8 +125,8 @@ pub trait UsageClient: Send + Sync {
 #[derive(Eq, Hash, PartialEq)]
 pub struct MockUsageDataParams {
     pub metric_id: BillableMetricId,
-    pub period_start: NaiveDate,
-    pub period_end: NaiveDate,
+    pub period_start: NaiveDateTime,
+    pub period_end: NaiveDateTime,
 }
 
 pub struct MockUsageClient {
@@ -132,7 +140,7 @@ impl UsageClient for MockUsageClient {
         _tenant_id: &TenantId,
         _customer_id: &CustomerId,
         metric: &BillableMetric,
-        period: Period,
+        period: UsagePeriod,
     ) -> StoreResult<UsageData> {
         let params = MockUsageDataParams {
             metric_id: metric.id,
@@ -150,12 +158,31 @@ impl UsageClient for MockUsageClient {
         Ok(usage_data)
     }
 
+    async fn fetch_total_usage(
+        &self,
+        _tenant_id: &TenantId,
+        _customer_id: &CustomerId,
+        metric: &BillableMetric,
+        period: UsagePeriod,
+    ) -> StoreResult<Decimal> {
+        let params = MockUsageDataParams {
+            metric_id: metric.id,
+            period_start: period.start,
+            period_end: period.end,
+        };
+        Ok(self
+            .data
+            .get(&params)
+            .map(|d| d.data.iter().map(|g| g.value).sum())
+            .unwrap_or(Decimal::ZERO))
+    }
+
     async fn fetch_windowed_usage(
         &self,
         _tenant_id: &TenantId,
         _customer_id: &CustomerId,
         _metric: &BillableMetric,
-        period: Period,
+        period: UsagePeriod,
     ) -> StoreResult<WindowedUsageData> {
         Ok(WindowedUsageData {
             data: vec![],
@@ -168,7 +195,7 @@ impl UsageClient for MockUsageClient {
         _tenant_id: &TenantId,
         _customer_id: Option<&CustomerId>,
         metric: &BillableMetric,
-        period: Period,
+        period: UsagePeriod,
     ) -> StoreResult<UsageData> {
         let params = MockUsageDataParams {
             metric_id: metric.id,

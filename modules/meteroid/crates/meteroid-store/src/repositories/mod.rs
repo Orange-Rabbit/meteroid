@@ -1,5 +1,6 @@
 pub use credit_notes::CreditNoteInterface;
 pub use customers::CustomersInterface;
+pub use entitlements::EntitlementsInterface;
 pub use invoices::InvoiceInterface;
 pub use organizations::OrganizationsInterface;
 pub use plans::PlansInterface;
@@ -29,6 +30,8 @@ pub mod credit_notes;
 pub mod customer_balance;
 pub mod customer_connection;
 pub mod dead_letter;
+pub mod entitlements;
+pub mod entity_activity;
 pub mod historical_rates;
 pub mod invoicing_entities;
 pub mod organizations;

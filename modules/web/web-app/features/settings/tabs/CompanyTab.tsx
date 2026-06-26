@@ -1,8 +1,4 @@
-import {
-  createConnectQueryKey,
-  createProtobufSafeUpdater,
-  useMutation,
-} from '@connectrpc/connect-query'
+import { createConnectQueryKey, useMutation } from '@connectrpc/connect-query';
 import {
   Button,
   Card,
@@ -63,22 +59,18 @@ export const CompanyTab = () => {
   const updateInvoicingEntityMut = useMutation(updateInvoicingEntity, {
     onSuccess: async res => {
       if (res.entity) {
-        queryClient.setQueryData(
-          createConnectQueryKey(listInvoicingEntities),
-          createProtobufSafeUpdater(listInvoicingEntities, prev => {
-            return {
-              entities: prev?.entities.map(entity => {
-                if (entity.id === res.entity?.id) {
-                  return res.entity
-                } else {
-                  return entity
-                }
-              }),
-            }
-          })
-        )
         queryClient.invalidateQueries({
-          queryKey: createConnectQueryKey(getInvoicingEntity, { id: res.entity?.id }),
+          queryKey: createConnectQueryKey({
+            schema: listInvoicingEntities,
+            cardinality: undefined
+          })
+        })
+        queryClient.invalidateQueries({
+          queryKey: createConnectQueryKey({
+            schema: getInvoicingEntity,
+            input: { id: res.entity?.id },
+            cardinality: 'finite'
+          }),
         })
         toast.success('Invoicing entity updated')
       }
@@ -137,7 +129,7 @@ export const CompanyTab = () => {
                 <h3 className="font-medium text-lg">Billing details</h3>
               </div>
               <div className="col-span-4 content-center  flex flex-row">
-                <div className="flex-grow"></div>
+                <div className="grow"></div>
                 <InvoicingEntitySelect/>
               </div>
             </div>
@@ -264,18 +256,13 @@ const FileUpload = ({ entity }: { entity: InvoicingEntity }) => {
   const queryClient = useQueryClient()
 
   const updateInvoicingEntityMut = useMutation(uploadInvoicingEntityLogo, {
-    onSuccess: async res => {
-      queryClient.setQueryData(
-        createConnectQueryKey(getInvoicingEntity, { id: entity.id }),
-        createProtobufSafeUpdater(getInvoicingEntity, prev => {
-          return {
-            entity: {
-              ...prev?.entity,
-              logoAttachmentId: res.logoUid,
-            },
-          }
+    onSuccess: async () => {
+      queryClient.invalidateQueries({
+        queryKey: createConnectQueryKey({
+          schema: getInvoicingEntity,
+          cardinality: undefined
         })
-      )
+      })
       toast.success('Invoicing entity updated')
     },
   })

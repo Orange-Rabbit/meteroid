@@ -1,11 +1,14 @@
+import { timestampDate } from '@bufbuild/protobuf/wkt'
 import { useMutation } from '@connectrpc/connect-query'
 import { Button, Card, Flex, Separator, Skeleton } from '@md/ui'
 import { ChevronDown, ExternalLink, Plus } from 'lucide-react'
 import { Fragment, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
+import { LocalId } from '@/components/LocalId'
 import { TenantPageLayout } from '@/components/layouts'
 import { CustomerHeader, CustomersCreatePanel } from '@/features/customers'
+import { ActivityCard } from '@/features/customers/cards/ActivityCard'
 import { InvoicesCard } from '@/features/customers/cards/InvoicesCard'
 import { PaymentMethodsCard } from '@/features/customers/cards/PaymentMethodsCard'
 import { SubscriptionsCard } from '@/features/customers/cards/SubscriptionsCard'
@@ -13,10 +16,12 @@ import { AddressLinesCompact } from '@/features/customers/cards/address/AddressC
 import { EditCustomerModal } from '@/features/customers/cards/customer/EditCustomerModal'
 import { CustomerInvoiceModal } from '@/features/customers/modals/CustomerInvoiceModal'
 import { ManageConnectionsModal } from '@/features/customers/modals/ManageConnectionsModal'
+import { EffectiveEntitlementsCard } from '@/features/entitlements/customer/EffectiveEntitlementsCard'
 import { getCountryFlagEmoji, getCountryName } from '@/features/settings/utils'
 import { useBasePath } from '@/hooks/useBasePath'
 import { useIsExpressOrganization } from '@/hooks/useIsExpressOrganization'
 import { useQuery } from '@/lib/connectrpc'
+import { env } from '@/lib/env'
 import { formatCurrency, rateToPercent } from '@/lib/utils/numbers'
 import { ConnectorProviderEnum } from '@/rpc/api/connectors/v1/models_pb'
 import {
@@ -78,7 +83,7 @@ export const Customer = () => {
             setEditPanelVisible={setEditPanelVisible}
             id={data?.id}
             name={data?.name || data?.alias}
-            archivedAt={data?.archivedAt?.toDate()}
+            archivedAt={data?.archivedAt ? timestampDate(data.archivedAt) : undefined}
           />
           {isLoading || !data ? (
             <>
@@ -131,6 +136,16 @@ export const Customer = () => {
                 <div className="flex-none">
                   <InvoicesCard customer={data} />
                 </div>
+                {env.entitlementsEnabled && (
+                  <div className="bg-card rounded-lg border border-border shadow-sm mt-4 flex-none">
+                    <div className="p-4 border-b border-border">
+                      <h3 className="text-md font-medium text-foreground">Entitlements</h3>
+                    </div>
+                    <div className="p-4">
+                      <EffectiveEntitlementsCard customerId={data.id} />
+                    </div>
+                  </div>
+                )}
               </Flex>
               <Flex direction="column" className="gap-2 w-1/3">
                 <Flex direction="column" className="gap-2 p-6">
@@ -148,6 +163,7 @@ export const Customer = () => {
                     )}
                   </div>
                   <div className="text-muted-foreground text-[13px] mb-3">{data.alias}</div>
+                  <FlexDetails title="ID" value={<LocalId localId={data.localId} />} />
                   <FlexDetails title="Legal name" value={data.name} />
                   <FlexDetails title="Email" value={data.billingEmail} />
                   <FlexDetails title="Currency" value={data.currency} />
@@ -276,6 +292,11 @@ export const Customer = () => {
                     currentPaymentMethodId={data.currentPaymentMethodId}
                   />
                 </Flex>
+                <Separator className="-my-3" />
+                <Flex direction="column" className="gap-2 p-6">
+                  <div className="text-[15px] font-medium">Activity</div>
+                  <ActivityCard customer={data} />
+                </Flex>
               </Flex>
             </Flex>
           )}
@@ -313,7 +334,7 @@ const OverviewCard = ({
   currency: string
   value?: number
 }) => (
-  <Card className="bg-[#1A1A1A] bg-gradient-to-t from-[rgba(243,242,241,0.00)] to-[rgba(243,242,241,0.02)] rounded-md p-5">
+  <Card className="bg-[#1A1A1A] bg-linear-to-t from-[rgba(243,242,241,0.00)] to-[rgba(243,242,241,0.02)] rounded-md p-5">
     <Flex align="center" className="gap-1 text-muted-foreground">
       <div className="text-[13px]">{title}</div>
       <ChevronDown size={10} className="mt-0.5" />

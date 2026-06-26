@@ -242,7 +242,6 @@ impl PortalCheckoutService for PortalCheckoutServiceComponents {
                                 name: addon.name.clone(),
                                 description: None,
                                 created_at: addon.created_at,
-                                created_by: uuid::Uuid::nil(),
                                 updated_at: None,
                                 archived_at: None,
                                 tenant_id: addon.tenant_id,
@@ -282,6 +281,10 @@ impl PortalCheckoutService for PortalCheckoutServiceComponents {
                             product_id: resolved.product_id,
                             price_id: resolved.price_id,
                             quantity: cs_ao.quantity,
+                            effective_from: chrono::Utc::now().naive_utc().date(),
+                            effective_to: None,
+                            lineage_id: None,
+                            added_by_amendment: false,
                         },
                     );
                 }

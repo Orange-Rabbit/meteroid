@@ -4,6 +4,7 @@ pub mod server;
 pub mod shared;
 pub mod utils;
 
+pub mod activity;
 pub mod addons;
 pub mod apitokens;
 pub mod bankaccounts;
@@ -15,6 +16,7 @@ pub mod creditnotes;
 pub mod customers;
 pub mod deadletter;
 mod domain_mapping;
+pub mod entitlements;
 pub mod errors;
 pub mod events;
 pub mod instance;

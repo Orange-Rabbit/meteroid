@@ -9,7 +9,7 @@ use diesel::debug_query;
 use error_stack::ResultExt;
 
 use common_domain::ids::{
-    PriceComponentId, PriceId, SubscriptionId, SubscriptionPriceComponentId, TenantId,
+    PriceComponentId, PriceId, ProductId, SubscriptionId, SubscriptionPriceComponentId, TenantId,
 };
 use diesel::{BoolExpressionMethods, ExpressionMethods, QueryDsl, SelectableHelper};
 use itertools::Itertools;
@@ -47,6 +47,38 @@ impl SubscriptionComponentRow {
             .get_results(conn)
             .await
             .attach("Error while inserting SubscriptionComponent batch")
+            .into_db_result()
+    }
+
+    /// Fetch the lineage root for a set of component ids. Returns `(id, lineage_id)`
+    /// pairs; a `None` lineage_id means the row is its own root. Used to match an
+    /// amendment credit to the originally-billed invoice line across overrides.
+    pub async fn find_lineage_by_ids(
+        conn: &mut PgConn,
+        ids: &[SubscriptionPriceComponentId],
+    ) -> DbResult<
+        Vec<(
+            SubscriptionPriceComponentId,
+            Option<SubscriptionPriceComponentId>,
+        )>,
+    > {
+        use crate::schema::subscription_component::dsl as d;
+        use diesel_async::RunQueryDsl;
+
+        if ids.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let query = d::subscription_component
+            .filter(d::id.eq_any(ids))
+            .select((d::id, d::lineage_id));
+
+        log::debug!("{}", debug_query::<diesel::pg::Pg, _>(&query));
+
+        query
+            .load(conn)
+            .await
+            .attach("Error while fetching subscription component lineage")
             .into_db_result()
     }
 
@@ -271,5 +303,39 @@ impl SubscriptionComponentRow {
             .await
             .attach("Error while listing component history for period")
             .into_db_result()
+    }
+
+    /// Fetch distinct product IDs from subscription components for the given subscriptions.
+    pub async fn list_product_ids(
+        conn: &mut PgConn,
+        subscription_ids: &[SubscriptionId],
+        tenant_id: &TenantId,
+    ) -> DbResult<Vec<ProductId>> {
+        use crate::schema::subscription::dsl as s_dsl;
+        use crate::schema::subscription_component::dsl as sc_dsl;
+        use diesel::dsl::not;
+        use diesel_async::RunQueryDsl;
+
+        if subscription_ids.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let query = sc_dsl::subscription_component
+            .inner_join(s_dsl::subscription)
+            .filter(sc_dsl::subscription_id.eq_any(subscription_ids))
+            .filter(s_dsl::tenant_id.eq(tenant_id))
+            .filter(sc_dsl::effective_to.is_null())
+            .filter(not(sc_dsl::product_id.is_null()))
+            .select(sc_dsl::product_id);
+
+        log::debug!("{}", debug_query::<diesel::pg::Pg, _>(&query));
+
+        let rows: Vec<Option<ProductId>> = query
+            .get_results(conn)
+            .await
+            .attach("Error while fetching product ids from subscription components")
+            .into_db_result()?;
+
+        Ok(rows.into_iter().flatten().collect())
     }
 }

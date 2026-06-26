@@ -1,5 +1,5 @@
-import { PartialMessage } from '@bufbuild/protobuf'
-import { disableQuery, useMutation } from '@connectrpc/connect-query'
+import { create } from '@bufbuild/protobuf';
+import { skipToken, useMutation } from '@connectrpc/connect-query'
 import {
   Alert,
   Button,
@@ -25,7 +25,7 @@ import {
 } from '@md/ui'
 import { Eye, InfoIcon, Plus, Save, Trash2 } from 'lucide-react'
 import { customAlphabet } from 'nanoid'
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useFieldArray } from 'react-hook-form'
 import { useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
@@ -33,6 +33,8 @@ import { z } from 'zod'
 
 import { AddOnCouponSelector } from '@/features/addons/AddOnCouponSelector'
 import { CustomerSelect } from '@/features/customers/CustomerSelect'
+import { resolveEntitlementSpecs } from '@/features/entitlements/creation/resolveEntitlementSpecs'
+import { PendingEntitlementsPanel } from '@/features/entitlements/pending/PendingEntitlementsPanel'
 import { SubscribablePlanVersionSelect } from '@/features/plans/SubscribablePlanVersionSelect'
 import {
   buildExistingProductRef,
@@ -45,9 +47,11 @@ import {
 import { QuotePriceComponentsWrapper } from '@/features/quotes/QuotePriceComponentsWrapper'
 import { QuoteView } from '@/features/quotes/QuoteView'
 import { PriceComponentsState } from '@/features/subscriptions/pricecomponents/PriceComponentsLogic'
+import { PricingComponent } from '@/features/subscriptions/pricecomponents/SubscriptionPricingTable'
 import { useBasePath } from '@/hooks/useBasePath'
 import { useZodForm } from '@/hooks/useZodForm'
 import { useQuery } from '@/lib/connectrpc'
+import { env } from '@/lib/env'
 import { mapDatev2 } from '@/lib/mapping'
 import {
   getPrice,
@@ -58,6 +62,7 @@ import { listAddOns } from '@/rpc/api/addons/v1/addons-AddOnsService_connectquer
 import { listCoupons } from '@/rpc/api/coupons/v1/coupons-CouponsService_connectquery'
 import { ListCouponRequest_CouponFilter } from '@/rpc/api/coupons/v1/coupons_pb'
 import { getCustomerById } from '@/rpc/api/customers/v1/customers-CustomersService_connectquery'
+import { createFeature } from '@/rpc/api/entitlements/v1/entitlements-EntitlementsService_connectquery'
 import {
   getInvoicingEntity,
   getInvoicingEntityProviders,
@@ -68,28 +73,37 @@ import {
   listPlans,
 } from '@/rpc/api/plans/v1/plans-PlansService_connectquery'
 import { listPriceComponents } from '@/rpc/api/pricecomponents/v1/pricecomponents-PriceComponentsService_connectquery'
+import { Price } from '@/rpc/api/prices/v1/models_pb'
+import { previewPrice } from '@/rpc/api/prices/v1/prices-PricesService_connectquery'
+import { PreviewPriceItemSchema } from '@/rpc/api/prices/v1/prices_pb';
 import {
-  CreateQuoteCoupon,
-  CreateQuoteCoupons,
-  CreateQuote as CreateQuoteData,
-  DetailedQuote,
-  Quote,
-  QuoteComponent,
-} from '@/rpc/api/quotes/v1/models_pb'
+  CreateQuoteCouponSchema,
+  CreateQuoteCouponsSchema,
+  CreateQuoteSchema as CreateQuoteDataSchema,
+  DetailedQuoteSchema,
+  QuoteSchema,
+  QuoteUsageExampleSchema,
+} from '@/rpc/api/quotes/v1/models_pb';
 import { createQuote } from '@/rpc/api/quotes/v1/quotes-QuotesService_connectquery'
-import { CreateQuoteRequest } from '@/rpc/api/quotes/v1/quotes_pb'
+import { CreateQuoteRequestSchema } from '@/rpc/api/quotes/v1/quotes_pb';
 import {
   ActivationCondition,
-  BankTransfer,
-  CreateSubscriptionAddOn,
-  CreateSubscriptionAddOns,
-  CreateSubscriptionComponents,
-  CreateSubscriptionComponents_ComponentOverride,
-  CreateSubscriptionComponents_ExtraComponent,
-  External,
-  OnlinePayment,
-  PaymentMethodsConfig,
-} from '@/rpc/api/subscriptions/v1/models_pb'
+  BankTransferSchema,
+  CreateSubscriptionAddOnSchema,
+  CreateSubscriptionAddOnsSchema,
+  CreateSubscriptionComponentsSchema,
+  CreateSubscriptionComponents_ComponentOverrideSchema,
+  CreateSubscriptionComponents_ExtraComponentSchema,
+  ExternalSchema,
+  OnlinePaymentSchema,
+  PaymentMethodsConfigSchema,
+} from '@/rpc/api/subscriptions/v1/models_pb';
+
+
+import type { PendingEntitlementSpec } from '@/features/entitlements/creation/types'
+import type { PreviewPriceItem } from '@/rpc/api/prices/v1/prices_pb';
+import type { DetailedQuote } from '@/rpc/api/quotes/v1/models_pb';
+import type { PaymentMethodsConfig } from '@/rpc/api/subscriptions/v1/models_pb';
 
 const recipientSchema = z.object({
   name: z.string().min(1, 'Recipient name is required'),
@@ -149,13 +163,19 @@ type PaymentMethodsType = 'online' | 'bankTransfer' | 'external'
 const buildPaymentMethodsConfig = (type: PaymentMethodsType): PaymentMethodsConfig => {
   switch (type) {
     case 'online':
-      return new PaymentMethodsConfig({ config: { case: 'online', value: new OnlinePayment() } })
+      return create(
+        PaymentMethodsConfigSchema,
+        { config: { case: 'online', value: create(OnlinePaymentSchema) } }
+      );
     case 'bankTransfer':
-      return new PaymentMethodsConfig({
-        config: { case: 'bankTransfer', value: new BankTransfer() },
-      })
+      return create(PaymentMethodsConfigSchema, {
+        config: { case: 'bankTransfer', value: create(BankTransferSchema) },
+      });
     case 'external':
-      return new PaymentMethodsConfig({ config: { case: 'external', value: new External() } })
+      return create(
+        PaymentMethodsConfigSchema,
+        { config: { case: 'external', value: create(ExternalSchema) } }
+      );
   }
 }
 
@@ -168,12 +188,30 @@ export const CreateQuote = () => {
       parameterized: [],
       overridden: [],
       extra: [],
+      usageExamples: [],
     },
   })
 
   // Add-ons and coupons state
-  const [selectedAddOns, setSelectedAddOns] = useState<{ addOnId: string }[]>([])
+  const [selectedAddOns, setSelectedAddOns] = useState<{ addOnId: string; quantity?: number }[]>([])
   const [selectedCoupons, setSelectedCoupons] = useState<{ couponId: string }[]>([])
+  // Entitlements state
+  const [pendingEntitlements, setPendingEntitlements] = useState<PendingEntitlementSpec[]>([])
+
+  // Collect product ids from in-flight (not-yet-persisted) extra and overridden price components.
+  // Only components with an existing productId contribute — new-product refs have no id yet.
+  const extraProductIds = useMemo(() => {
+    const ids = new Set<string>()
+    for (const c of priceComponentsState.components.extra) {
+      if (c.productId) ids.add(c.productId)
+    }
+    for (const c of priceComponentsState.components.overridden) {
+      if (c.productId) ids.add(c.productId)
+    }
+    return Array.from(ids)
+  }, [priceComponentsState.components.extra, priceComponentsState.components.overridden])
+
+  const createFeatureMutation = useMutation(createFeature)
 
 
   const createQuoteMutation = useMutation(createQuote, {
@@ -274,6 +312,13 @@ export const CreateQuote = () => {
     { enabled: Boolean(planVersionId) }
   )
 
+  const removedProductIds = useMemo(() => {
+    const removedSet = new Set(priceComponentsState.components.removed)
+    return (priceComponentsQuery.data?.components ?? [])
+      .filter(c => removedSet.has(c.id) && c.productId)
+      .map(c => c.productId!)
+  }, [priceComponentsState.components.removed, priceComponentsQuery.data?.components])
+
   // Add-ons and coupons queries
   const addOnsQuery = useQuery(
     listAddOns,
@@ -285,7 +330,7 @@ export const CreateQuote = () => {
             page: 0,
           },
         }
-      : disableQuery
+      : skipToken
   )
 
   const couponsQuery = useQuery(listCoupons, {
@@ -303,7 +348,7 @@ export const CreateQuote = () => {
   const invoicingEntityId = customerQuery.data?.customer?.invoicingEntityId
   const providersQuery = useQuery(
     getInvoicingEntityProviders,
-    invoicingEntityId ? { id: invoicingEntityId } : disableQuery
+    invoicingEntityId ? { id: invoicingEntityId } : skipToken
   )
 
   const hasOnlinePaymentProvider =
@@ -353,27 +398,32 @@ export const CreateQuote = () => {
     try {
       if (!planCurrency) throw new Error('Currency is required')
 
-      const subscriptionComponents = new CreateSubscriptionComponents({
+      const resolvedEntitlements = await resolveEntitlementSpecs(
+        pendingEntitlements,
+        req => createFeatureMutation.mutateAsync(req),
+      )
+
+      const subscriptionComponents = create(CreateSubscriptionComponentsSchema, {
         parameterizedComponents: priceComponentsState.components.parameterized,
         overriddenComponents: priceComponentsState.components.overridden.map(c => {
           const pricingType = toPricingTypeFromFeeType(
             c.feeType,
             c.formData.usageModel as string | undefined
           )
-          return new CreateSubscriptionComponents_ComponentOverride({
+          return create(CreateSubscriptionComponents_ComponentOverrideSchema, {
             componentId: c.componentId,
             name: c.name,
             price: wrapAsNewPriceEntries(
               buildPriceInputs(pricingType, c.formData as Record<string, unknown>, planCurrency)
             )[0],
-          })
+          });
         }),
         extraComponents: priceComponentsState.components.extra.map(c => {
           const pricingType = toPricingTypeFromFeeType(
             c.feeType,
             c.formData.usageModel as string | undefined
           )
-          return new CreateSubscriptionComponents_ExtraComponent({
+          return create(CreateSubscriptionComponents_ExtraComponentSchema, {
             name: c.name,
             product: c.productId
               ? buildExistingProductRef(c.productId)
@@ -381,22 +431,24 @@ export const CreateQuote = () => {
             price: wrapAsNewPriceEntries(
               buildPriceInputs(pricingType, c.formData as Record<string, unknown>, planCurrency)
             )[0],
-          })
+          });
         }),
         removeComponents: priceComponentsState.components.removed,
       })
 
       // Build add-ons
-      const addOns = new CreateSubscriptionAddOns({
-        addOns: selectedAddOns.map(a => new CreateSubscriptionAddOn({ addOnId: a.addOnId, quantity: 1 })),
+      const addOns = create(CreateSubscriptionAddOnsSchema, {
+        addOns: selectedAddOns.map(a =>
+          create(CreateSubscriptionAddOnSchema, { addOnId: a.addOnId, quantity: a.quantity ?? 1 })
+        ),
       })
 
       // Build coupons
-      const coupons = new CreateQuoteCoupons({
-        coupons: selectedCoupons.map(c => new CreateQuoteCoupon({ couponId: c.couponId })),
+      const coupons = create(CreateQuoteCouponsSchema, {
+        coupons: selectedCoupons.map(c => create(CreateQuoteCouponSchema, { couponId: c.couponId })),
       })
 
-      const createQuoteData = new CreateQuoteData({
+      const createQuoteData = create(CreateQuoteDataSchema, {
         quoteNumber: data.quote_number,
         planVersionId: data.plan_version_id,
         customerId: data.customer_id,
@@ -423,9 +475,20 @@ export const CreateQuote = () => {
         components: subscriptionComponents,
         addOns: addOns,
         coupons: coupons,
+        entitlements: resolvedEntitlements,
+        usageExamples: (priceComponentsState.components.usageExamples ?? [])
+          .filter(e => e.quantity.trim() !== '')
+          .map(
+            e =>
+              create(QuoteUsageExampleSchema, {
+                priceComponentId: e.componentId,
+                componentName: e.componentId ? undefined : e.name,
+                exampleQuantity: e.quantity,
+              })
+          ),
       })
 
-      const request = new CreateQuoteRequest({
+      const request = create(CreateQuoteRequestSchema, {
         quote: createQuoteData,
       })
 
@@ -446,8 +509,11 @@ export const CreateQuote = () => {
     }
   }
 
-  const createPreviewQuote = (data: CreateQuoteFormData): DetailedQuote => {
-    const quote = new Quote({
+  const createPreviewQuote = (
+    data: CreateQuoteFormData,
+    components: PricingComponent[]
+  ): DetailedQuote => {
+    const quote = create(QuoteSchema, {
       id: 'preview-quote',
       quoteNumber: data.quote_number,
       planVersionId: data.plan_version_id,
@@ -468,36 +534,76 @@ export const CreateQuote = () => {
       createdAt: new Date().toISOString(),
     })
 
-    const components: PartialMessage<QuoteComponent>[] = getPreviewPricingComponents()
-
     const addOnItems = selectedAddOns.flatMap(sel => {
       const addOn = availableAddOns.find(a => a.id === sel.addOnId)
       if (!addOn?.price) return []
       return [{
         id: addOn.id,
         name: addOn.name,
-        quantity: 1,
+        quantity: sel.quantity ?? 1,
         period: priceToSubscriptionPeriod(addOn.price),
         fee: priceToSubscriptionFee(addOn.price),
       }]
     })
 
-    return new DetailedQuote({
+    return create(DetailedQuoteSchema, {
       quote,
       components,
       addOns: addOnItems,
       customer: customerQuery.data?.customer,
       invoicingEntity: invoicingEntityQuery.data?.entity,
-    })
+    });
   }
 
-  const getPreviewPricingComponents = () => {
+  const buildPreviewPricing = (): {
+    components: PricingComponent[]
+    items: PreviewPriceItem[]
+  } => {
     const priceComponentsData = priceComponentsQuery.data?.components || []
-    if (!planCurrency) return []
+    if (!planCurrency) return { components: [], items: [] }
 
-    const { parameterized, overridden, extra, removed } = priceComponentsState.components
+    const { parameterized, overridden, extra, removed, usageExamples } =
+      priceComponentsState.components
 
-    // Default plan components (not removed, not parameterized, not overridden)
+    const exampleFor = (key: { componentId?: string; name?: string }): string | undefined =>
+      (usageExamples ?? []).find(e =>
+        key.componentId ? e.componentId === key.componentId : e.name === key.name
+      )?.quantity
+
+    const items: PreviewPriceItem[] = []
+
+    const makeComponent = (
+      id: string,
+      name: string,
+      price: Price,
+      quantity: string | undefined,
+      feeOptions?: { initialSlotCount?: number }
+    ): PricingComponent => {
+      if (
+        price.pricing.case === 'usagePricing' &&
+        price.pricing.value.model.case &&
+        price.pricing.value.model.case !== 'matrix' &&
+        quantity &&
+        quantity.trim() !== ''
+      ) {
+        items.push(
+          create(PreviewPriceItemSchema, {
+            key: id,
+            usagePricing: price.pricing.value,
+            quantity,
+            currency: planCurrency,
+          })
+        )
+      }
+      return {
+        id,
+        name,
+        period: priceToSubscriptionPeriod(price),
+        fee: priceToSubscriptionFee(price, feeOptions),
+        exampleUsageQuantity: quantity,
+      }
+    }
+
     const defaultPlanComponents = priceComponentsData
       .filter(
         pc =>
@@ -508,66 +614,73 @@ export const CreateQuote = () => {
       .flatMap(pc => {
         const price = getPrice(pc)
         if (!price) return []
-        return [
-          {
-            id: pc.id,
-            name: pc.name,
-            period: priceToSubscriptionPeriod(price),
-            fee: priceToSubscriptionFee(price),
-          },
-        ]
+        return [makeComponent(pc.id, pc.name, price, exampleFor({ componentId: pc.id }))]
       })
 
-    // Parameterized plan components
     const parameterizedComponents = parameterized.flatMap(c => {
       const pc = priceComponentsData.find(pc => pc.id === c.componentId)
       if (!pc) return []
       const price = getPrice(pc)
       if (!price) return []
       return [
-        {
-          id: pc.id,
-          name: pc.name,
-          period: priceToSubscriptionPeriod(price),
-          fee: priceToSubscriptionFee(price, { initialSlotCount: c.initialSlotCount }),
-        },
+        makeComponent(pc.id, pc.name, price, exampleFor({ componentId: pc.id }), {
+          initialSlotCount: c.initialSlotCount,
+        }),
       ]
     })
 
-    // Override components — derive display Price from formData
     const overriddenComponents = overridden.map(c => {
       const price = formDataToPrice(c.feeType, c.formData as Record<string, unknown>, planCurrency)
-      return {
-        id: c.componentId,
-        name: c.name,
-        period: priceToSubscriptionPeriod(price),
-        fee: priceToSubscriptionFee(price),
-      }
+      return makeComponent(c.componentId, c.name, price, exampleFor({ componentId: c.componentId }))
     })
 
-    // Extra components — derive display Price from formData
     const extraComponents = extra.map(c => {
       const price = formDataToPrice(c.feeType, c.formData as Record<string, unknown>, planCurrency)
-      return {
-        id: c.name,
-        name: c.name,
-        period: priceToSubscriptionPeriod(price),
-        fee: priceToSubscriptionFee(price),
-      }
+      return makeComponent(c.name, c.name, price, exampleFor({ name: c.name }))
     })
 
-    return [
-      ...defaultPlanComponents,
-      ...parameterizedComponents,
-      ...overriddenComponents,
-      ...extraComponents,
-    ]
+    return {
+      components: [
+        ...defaultPlanComponents,
+        ...parameterizedComponents,
+        ...overriddenComponents,
+        ...extraComponents,
+      ],
+      items,
+    }
   }
+
+  const { components: rawPreviewComponents, items: previewPriceItems } = buildPreviewPricing()
+
+  // uint64 fields in the request are BigInt, which react-query's default key
+  // hashing can't serialize — provide a BigInt-safe key.
+  const previewPriceQuery = useQuery(
+    previewPrice,
+    { items: previewPriceItems },
+    {
+      enabled: previewPriceItems.length > 0,
+      queryKeyHashFn: () =>
+        'previewPrice-' +
+        JSON.stringify(previewPriceItems, (_, v) => (typeof v === 'bigint' ? v.toString() : v)),
+    }
+  )
+
+  const exampleAmountByKey = useMemo(
+    () => new Map((previewPriceQuery.data?.results ?? []).map(r => [r.key, r.amount])),
+    [previewPriceQuery.data]
+  )
+
+  const previewComponents: PricingComponent[] = useMemo(
+    () =>
+      rawPreviewComponents.map(c =>
+        exampleAmountByKey.has(c.id) ? { ...c, exampleUsageAmount: exampleAmountByKey.get(c.id) } : c
+      ),
+    [rawPreviewComponents, exampleAmountByKey]
+  )
 
   if (previewMode) {
     const formData = methods.getValues()
-    const previewQuote = createPreviewQuote(formData)
-    const previewComponents = getPreviewPricingComponents()
+    const previewQuote = createPreviewQuote(formData, previewComponents)
 
     return (
       <div className="space-y-6">
@@ -742,6 +855,7 @@ export const CreateQuote = () => {
                       }
                       onStateChange={setPriceComponentsState}
                       initialState={priceComponentsState}
+                      exampleAmountByKey={exampleAmountByKey}
                     />
                     {!pricingValidation.isValid && pricingValidation.errors.length > 0 && (
                       <div className="bg-warning/10 border border-warning/20 p-3 rounded-lg">
@@ -769,9 +883,16 @@ export const CreateQuote = () => {
                   <CardContent>
                     <AddOnCouponSelector
                       selectedAddOns={selectedAddOns}
-                      onAddOnAdd={id => setSelectedAddOns(prev => [...prev, { addOnId: id }])}
+                      onAddOnAdd={id =>
+                        setSelectedAddOns(prev => [...prev, { addOnId: id, quantity: 1 }])
+                      }
                       onAddOnRemove={id =>
                         setSelectedAddOns(prev => prev.filter(a => a.addOnId !== id))
+                      }
+                      onAddOnQuantityChange={(id, qty) =>
+                        setSelectedAddOns(prev =>
+                          prev.map(a => (a.addOnId === id ? { ...a, quantity: qty } : a))
+                        )
                       }
                       availableAddOns={availableAddOns}
                       selectedCoupons={selectedCoupons}
@@ -781,6 +902,29 @@ export const CreateQuote = () => {
                       }
                       availableCoupons={availableCoupons}
                       currency={planCurrency}
+                    />
+                  </CardContent>
+                </Card>
+              )}
+
+              {/* Entitlements */}
+              {env.entitlementsEnabled && planVersionId && (
+                <Card>
+                  <CardHeader>
+                    <CardTitle>Entitlements</CardTitle>
+                    <CardDescription>Features and limits this quote will grant the customer.</CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <PendingEntitlementsPanel
+                      selection={{
+                        planVersionId,
+                        addOnIds: selectedAddOns.map(a => a.addOnId),
+                        extraProductIds,
+                        removedProductIds,
+                      }}
+                      pending={pendingEntitlements}
+                      onChange={setPendingEntitlements}
+                      entityLabel="quote"
                     />
                   </CardContent>
                 </Card>

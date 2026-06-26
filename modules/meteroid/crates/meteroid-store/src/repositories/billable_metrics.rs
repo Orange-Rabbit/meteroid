@@ -1,3 +1,4 @@
+use crate::domain::entity_activity::Actor;
 use crate::domain::outbox_event::OutboxEvent;
 use crate::domain::{
     BillableMetric, BillableMetricMeta, BillableMetricNew, PaginatedVec, PaginationRequest,
@@ -7,10 +8,10 @@ use crate::{Store, StoreResult, domain};
 use common_domain::identifiers::validate_code;
 use common_domain::ids::{BaseId, BillableMetricId, ProductFamilyId, TenantId};
 use common_eventbus::Event;
-use diesel_async::scoped_futures::ScopedFutureExt;
 use diesel_models::billable_metrics::{BillableMetricRow, BillableMetricRowNew};
 use diesel_models::product_families::ProductFamilyRow;
 use error_stack::Report;
+use scoped_futures::ScopedFutureExt;
 
 #[async_trait::async_trait]
 pub trait BillableMetricInterface {
@@ -32,6 +33,7 @@ pub trait BillableMetricInterface {
 
     async fn insert_billable_metric(
         &self,
+        actor: Actor,
         billable_metric: domain::BillableMetricNew,
     ) -> StoreResult<domain::BillableMetric>;
 
@@ -49,6 +51,7 @@ pub trait BillableMetricInterface {
 
     async fn archive_billable_metric(
         &self,
+        actor: Actor,
         id: BillableMetricId,
         tenant_id: TenantId,
     ) -> StoreResult<()>;
@@ -61,6 +64,7 @@ pub trait BillableMetricInterface {
 
     async fn update_billable_metric(
         &self,
+        actor: Actor,
         id: BillableMetricId,
         tenant_id: TenantId,
         update: domain::BillableMetricUpdate,
@@ -120,6 +124,7 @@ impl BillableMetricInterface for Store {
 
     async fn insert_billable_metric(
         &self,
+        actor: Actor,
         billable_metric: BillableMetricNew,
     ) -> StoreResult<BillableMetric> {
         validate_code(&billable_metric.code)
@@ -158,14 +163,15 @@ impl BillableMetricInterface for Store {
                 })
                 .transpose()?,
             usage_group_key: billable_metric.usage_group_key,
-            created_by: billable_metric.created_by,
             tenant_id: billable_metric.tenant_id,
             product_family_id: family.id,
             product_id: billable_metric.product_id,
         };
 
+        let tenant_id = insertable_entity.tenant_id;
         let res: BillableMetric = self
             .transaction_with(&mut conn, |conn| {
+                let actor = &actor;
                 async move {
                     let res: BillableMetric = insertable_entity
                         .insert(conn)
@@ -174,8 +180,10 @@ impl BillableMetricInterface for Store {
                         .and_then(TryInto::try_into)?;
 
                     self.internal
-                        .insert_outbox_events_tx(
+                        .record_outbox_batch_tx(
                             conn,
+                            tenant_id,
+                            actor,
                             vec![OutboxEvent::billable_metric_created(res.clone().into())],
                         )
                         .await?;
@@ -188,11 +196,7 @@ impl BillableMetricInterface for Store {
 
         let _ = self
             .eventbus
-            .publish(Event::billable_metric_created(
-                res.created_by,
-                res.id.as_uuid(),
-                res.tenant_id.as_uuid(),
-            ))
+            .publish(Event::billable_metric_created(actor, res.id, res.tenant_id))
             .await;
 
         Ok(res)
@@ -229,12 +233,14 @@ impl BillableMetricInterface for Store {
 
     async fn archive_billable_metric(
         &self,
+        actor: Actor,
         id: BillableMetricId,
         tenant_id: TenantId,
     ) -> StoreResult<()> {
         let mut conn = self.get_conn().await?;
 
         self.transaction_with(&mut conn, |conn| {
+            let actor = &actor;
             async move {
                 BillableMetricRow::archive(conn, id, tenant_id)
                     .await
@@ -246,8 +252,10 @@ impl BillableMetricInterface for Store {
                     .and_then(TryInto::try_into)?;
 
                 self.internal
-                    .insert_outbox_events_tx(
+                    .record_outbox_batch_tx(
                         conn,
+                        tenant_id,
+                        actor,
                         vec![OutboxEvent::billable_metric_archived(metric.into())],
                     )
                     .await?;
@@ -273,6 +281,7 @@ impl BillableMetricInterface for Store {
 
     async fn update_billable_metric(
         &self,
+        actor: Actor,
         id: BillableMetricId,
         tenant_id: TenantId,
         update: domain::BillableMetricUpdate,
@@ -303,6 +312,7 @@ impl BillableMetricInterface for Store {
         };
 
         self.transaction_with(&mut conn, |conn| {
+            let actor = &actor;
             async move {
                 let metric: BillableMetric = BillableMetricRow::update(conn, id, tenant_id, patch)
                     .await
@@ -310,8 +320,10 @@ impl BillableMetricInterface for Store {
                     .and_then(TryInto::try_into)?;
 
                 self.internal
-                    .insert_outbox_events_tx(
+                    .record_outbox_batch_tx(
                         conn,
+                        tenant_id,
+                        actor,
                         vec![OutboxEvent::billable_metric_updated(metric.clone().into())],
                     )
                     .await?;

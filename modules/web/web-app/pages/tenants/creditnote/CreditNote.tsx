@@ -172,7 +172,11 @@ const CreditNoteView = ({ creditNote, creditNoteId }: Props) => {
     onSuccess: async () => {
       toast.success('Credit note finalized')
       await queryClient.invalidateQueries({
-        queryKey: createConnectQueryKey(getCreditNote, { id: creditNoteId }),
+        queryKey: createConnectQueryKey({
+          schema: getCreditNote,
+          input: { id: creditNoteId },
+          cardinality: 'finite'
+        }),
       })
     },
     onError: error => {
@@ -184,10 +188,18 @@ const CreditNoteView = ({ creditNote, creditNoteId }: Props) => {
     onSuccess: async () => {
       toast.success('Credit note voided')
       await queryClient.invalidateQueries({
-        queryKey: createConnectQueryKey(getCreditNote, { id: creditNoteId }),
+        queryKey: createConnectQueryKey({
+          schema: getCreditNote,
+          input: { id: creditNoteId },
+          cardinality: 'finite'
+        }),
       })
       await queryClient.invalidateQueries({
-        queryKey: createConnectQueryKey(listCreditNotes, {}),
+        queryKey: createConnectQueryKey({
+          schema: listCreditNotes,
+          input: {},
+          cardinality: 'finite'
+        }),
       })
     },
     onError: error => {
@@ -199,7 +211,11 @@ const CreditNoteView = ({ creditNote, creditNoteId }: Props) => {
     onSuccess: async () => {
       toast.success('Credit note deleted')
       await queryClient.invalidateQueries({
-        queryKey: createConnectQueryKey(listCreditNotes, {}),
+        queryKey: createConnectQueryKey({
+          schema: listCreditNotes,
+          input: {},
+          cardinality: 'finite'
+        }),
       })
       navigate(`${basePath}/credit-notes`)
     },
@@ -429,7 +445,7 @@ const CreditNoteView = ({ creditNote, creditNoteId }: Props) => {
             <div className="text-[15px] font-medium">Timeline</div>
             <div className="space-y-2">
               <div className="flex items-start gap-2">
-                <div className="w-1.5 h-1.5 rounded-full bg-muted-foreground mt-1.5 flex-shrink-0"></div>
+                <div className="w-1.5 h-1.5 rounded-full bg-muted-foreground mt-1.5 shrink-0"></div>
                 <div>
                   <div className="text-[13px] font-medium">Credit Note Created</div>
                   <div className="text-[11px] text-muted-foreground">
@@ -439,7 +455,7 @@ const CreditNoteView = ({ creditNote, creditNoteId }: Props) => {
               </div>
               {creditNote.finalizedAt && (
                 <div className="flex items-start gap-2">
-                  <div className="w-1.5 h-1.5 rounded-full bg-success mt-1.5 flex-shrink-0"></div>
+                  <div className="w-1.5 h-1.5 rounded-full bg-success mt-1.5 shrink-0"></div>
                   <div>
                     <div className="text-[13px] font-medium">Credit Note Finalized</div>
                     <div className="text-[11px] text-muted-foreground">
@@ -450,7 +466,7 @@ const CreditNoteView = ({ creditNote, creditNoteId }: Props) => {
               )}
               {creditNote.voidedAt && (
                 <div className="flex items-start gap-2">
-                  <div className="w-1.5 h-1.5 rounded-full bg-red-500 mt-1.5 flex-shrink-0"></div>
+                  <div className="w-1.5 h-1.5 rounded-full bg-red-500 mt-1.5 shrink-0"></div>
                   <div>
                     <div className="text-[13px] font-medium">Credit Note Voided</div>
                     <div className="text-[11px] text-muted-foreground">

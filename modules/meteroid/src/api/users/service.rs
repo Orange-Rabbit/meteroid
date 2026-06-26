@@ -4,8 +4,12 @@ use meteroid_grpc::meteroid::api::users::v1::{
     AcceptInviteRequest, AcceptInviteResponse, CompleteRegistrationRequest,
     CompleteRegistrationResponse, GetUserByIdRequest, GetUserByIdResponse, InitRegistrationRequest,
     InitRegistrationResponse, InitResetPasswordRequest, InitResetPasswordResponse,
-    ListUsersRequest, ListUsersResponse, LoginRequest, LoginResponse, MeRequest, MeResponse,
-    OnboardMeRequest, OnboardMeResponse, ResetPasswordRequest, ResetPasswordResponse,
+    InviteMemberRequest, InviteMemberResponse, LeaveOrganizationRequest, LeaveOrganizationResponse,
+    ListPendingInvitesRequest, ListPendingInvitesResponse, ListUsersRequest, ListUsersResponse,
+    LoginRequest, LoginResponse, MeRequest, MeResponse, OnboardMeRequest, OnboardMeResponse,
+    OrganizationInvite as GrpcOrganizationInvite, OrganizationUserRole as GrpcOrganizationUserRole,
+    RemoveMemberRequest, RemoveMemberResponse, ResendInviteRequest, ResendInviteResponse,
+    ResetPasswordRequest, ResetPasswordResponse, RevokeInviteRequest, RevokeInviteResponse,
     users_service_server::UsersService,
 };
 use meteroid_store::domain::users::{LoginUserRequest, RegisterUserRequest, UpdateUser};
@@ -15,8 +19,9 @@ use secrecy::{ExposeSecret, SecretString};
 use tonic::{Request, Response, Status};
 use validator::{ValidateEmail, ValidateLength};
 
+use crate::api::shared::conversions::ProtoConv;
 use crate::api::users::error::UserApiError;
-use crate::parse_uuid;
+use common_domain::ids::OrganizationInviteId;
 
 use super::{UsersServiceComponents, mapping};
 
@@ -26,7 +31,7 @@ use super::{UsersServiceComponents, mapping};
 impl UsersService for UsersServiceComponents {
     #[tracing::instrument(skip_all)]
     async fn me(&self, request: Request<MeRequest>) -> Result<Response<MeResponse>, Status> {
-        let actor = request.actor()?;
+        let actor = request.actor_user()?;
         let organization = request.organization().ok();
 
         let me = self
@@ -44,7 +49,7 @@ impl UsersService for UsersServiceComponents {
         &self,
         request: Request<OnboardMeRequest>,
     ) -> Result<Response<OnboardMeResponse>, Status> {
-        let actor = request.actor()?;
+        let actor = request.actor_user()?;
 
         let request = request.into_inner();
 
@@ -74,9 +79,10 @@ impl UsersService for UsersServiceComponents {
 
         let req = request.into_inner();
 
+        let user_id = common_domain::ids::UserId::from_proto(&req.id)?;
         let user = self
             .store
-            .find_user_by_id_and_tenant(parse_uuid!(&req.id)?, tenant)
+            .find_user_by_id_and_tenant(user_id, tenant)
             .await
             .map(mapping::user::domain_with_role_to_proto)
             .map_err(Into::<UserApiError>::into)?;
@@ -247,12 +253,14 @@ impl UsersService for UsersServiceComponents {
         &self,
         request: Request<AcceptInviteRequest>,
     ) -> Result<Response<AcceptInviteResponse>, Status> {
-        let actor = request.actor()?;
+        let actor = request.actor_user()?;
         let req = request.into_inner();
+
+        let invite_id = OrganizationInviteId::from_proto(&req.invite_id)?;
 
         let organization = self
             .store
-            .accept_invite(actor, req.invite_key)
+            .accept_invite(actor, invite_id)
             .await
             .map_err(Into::<UserApiError>::into)?;
 
@@ -261,5 +269,136 @@ impl UsersService for UsersServiceComponents {
                 super::super::organizations::mapping::organization::domain_to_proto(organization),
             ),
         }))
+    }
+
+    #[tracing::instrument(skip_all)]
+    async fn invite_member(
+        &self,
+        request: Request<InviteMemberRequest>,
+    ) -> Result<Response<InviteMemberResponse>, Status> {
+        let actor = request.actor_user()?;
+        let org_id = request.organization()?;
+        request.require_admin()?;
+        let req = request.into_inner();
+
+        let role = GrpcOrganizationUserRole::try_from(req.role)
+            .map_err(|_| Status::invalid_argument("Invalid role"))?;
+        let role = mapping::role::server_to_domain(role);
+
+        let invite = self
+            .store
+            .invite_member(org_id, actor, req.email, role.into())
+            .await
+            .map_err(Into::<UserApiError>::into)?;
+
+        Ok(Response::new(InviteMemberResponse {
+            invite_id: invite.id.to_string(),
+        }))
+    }
+
+    #[tracing::instrument(skip_all)]
+    async fn resend_invite(
+        &self,
+        request: Request<ResendInviteRequest>,
+    ) -> Result<Response<ResendInviteResponse>, Status> {
+        let actor = request.actor_user()?;
+        let org_id = request.organization()?;
+        request.require_admin()?;
+        let req = request.into_inner();
+
+        let invite_id = OrganizationInviteId::from_proto(&req.invite_id)?;
+
+        self.store
+            .resend_invite(invite_id, actor, org_id)
+            .await
+            .map_err(Into::<UserApiError>::into)?;
+
+        Ok(Response::new(ResendInviteResponse {}))
+    }
+
+    #[tracing::instrument(skip_all)]
+    async fn revoke_invite(
+        &self,
+        request: Request<RevokeInviteRequest>,
+    ) -> Result<Response<RevokeInviteResponse>, Status> {
+        let org_id = request.organization()?;
+        request.require_admin()?;
+        let req = request.into_inner();
+
+        let invite_id = OrganizationInviteId::from_proto(&req.invite_id)?;
+
+        self.store
+            .revoke_invite(invite_id, org_id)
+            .await
+            .map_err(Into::<UserApiError>::into)?;
+
+        Ok(Response::new(RevokeInviteResponse {}))
+    }
+
+    #[tracing::instrument(skip_all)]
+    async fn list_pending_invites(
+        &self,
+        request: Request<ListPendingInvitesRequest>,
+    ) -> Result<Response<ListPendingInvitesResponse>, Status> {
+        let org_id = request.organization()?;
+        request.require_admin()?;
+
+        let invites = self
+            .store
+            .list_pending_invites(org_id)
+            .await
+            .map_err(Into::<UserApiError>::into)?;
+
+        let grpc_invites = invites
+            .into_iter()
+            .map(|inv| GrpcOrganizationInvite {
+                id: inv.id.as_proto(),
+                invited_email: inv.invited_email,
+                role: mapping::role::domain_to_server(inv.role.into()).into(),
+                invited_by_email: inv.invited_by_email,
+                created_at: inv.created_at.as_proto(),
+                expires_at: inv.expires_at.as_proto(),
+                is_expired: inv.is_expired,
+            })
+            .collect();
+
+        Ok(Response::new(ListPendingInvitesResponse {
+            invites: grpc_invites,
+        }))
+    }
+
+    #[tracing::instrument(skip_all)]
+    async fn leave_organization(
+        &self,
+        request: Request<LeaveOrganizationRequest>,
+    ) -> Result<Response<LeaveOrganizationResponse>, Status> {
+        let actor = request.actor_user()?;
+        let org_id = request.organization()?;
+
+        self.store
+            .leave_organization(actor, org_id)
+            .await
+            .map_err(Into::<UserApiError>::into)?;
+
+        Ok(Response::new(LeaveOrganizationResponse {}))
+    }
+
+    #[tracing::instrument(skip_all)]
+    async fn remove_member(
+        &self,
+        request: Request<RemoveMemberRequest>,
+    ) -> Result<Response<RemoveMemberResponse>, Status> {
+        let actor = request.actor_user()?;
+        let org_id = request.organization()?;
+        let req = request.into_inner();
+
+        let target_user_id = common_domain::ids::UserId::from_proto(&req.user_id)?;
+
+        self.store
+            .remove_member(actor, target_user_id, org_id)
+            .await
+            .map_err(Into::<UserApiError>::into)?;
+
+        Ok(Response::new(RemoveMemberResponse {}))
     }
 }

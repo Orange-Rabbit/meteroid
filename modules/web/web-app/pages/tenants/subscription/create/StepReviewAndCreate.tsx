@@ -1,13 +1,16 @@
-import { disableQuery, useMutation } from '@connectrpc/connect-query'
+import { create } from '@bufbuild/protobuf';
+import { createConnectQueryKey, skipToken, useMutation } from '@connectrpc/connect-query';
 import { useQueryClient } from '@tanstack/react-query'
 import { Badge, Button, Card, CardContent, CardHeader, CardTitle } from '@ui/components'
+import Decimal from 'decimal.js'
 import { useAtom } from 'jotai'
-import { Calendar, Package, PlusIcon, Tag, User } from 'lucide-react'
+import { Calendar, Package, PlusIcon, Shield, Tag, User } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { useWizard } from 'react-use-wizard'
 import { toast } from 'sonner'
 
 import { PageSection } from '@/components/layouts/shared/PageSection'
+import { resolveEntitlementSpecs } from '@/features/entitlements/creation/resolveEntitlementSpecs'
 import {
   buildExistingProductRef,
   buildNewProductRef,
@@ -19,6 +22,8 @@ import {
 import { getApiComponentBillingPeriodLabel } from '@/features/subscriptions/utils/billingPeriods'
 import { useBasePath } from '@/hooks/useBasePath'
 import { useQuery } from '@/lib/connectrpc'
+import { CURRENCIES } from '@/lib/data/currencies'
+import { env } from '@/lib/env'
 import { mapDatev2 } from '@/lib/mapping'
 import {
   formatUsagePriceSummary,
@@ -26,6 +31,7 @@ import {
   getPrice,
   getPriceBillingLabel,
 } from '@/lib/mapping/priceToSubscriptionFee'
+import { formatCurrency } from '@/lib/utils/numbers'
 import {
   createSubscriptionAtom,
   PaymentMethodsConfigType,
@@ -35,20 +41,24 @@ import { listCoupons } from '@/rpc/api/coupons/v1/coupons-CouponsService_connect
 import { ListCouponRequest_CouponFilter } from '@/rpc/api/coupons/v1/coupons_pb'
 import { Coupon } from '@/rpc/api/coupons/v1/models_pb'
 import { getCustomerById } from '@/rpc/api/customers/v1/customers-CustomersService_connectquery'
+import { createFeature } from '@/rpc/api/entitlements/v1/entitlements-EntitlementsService_connectquery'
 import { getPlanWithVersionByVersionId } from '@/rpc/api/plans/v1/plans-PlansService_connectquery'
 import { PriceComponent } from '@/rpc/api/pricecomponents/v1/models_pb'
 import { listPriceComponents } from '@/rpc/api/pricecomponents/v1/pricecomponents-PriceComponentsService_connectquery'
 import {
   ActivationCondition,
-  BankTransfer,
-  External,
-  OnlinePayment,
-  PaymentMethodsConfig,
-} from '@/rpc/api/subscriptions/v1/models_pb'
+  BankTransferSchema,
+  ExternalSchema,
+  OnlinePaymentSchema,
+  PaymentMethodsConfigSchema,
+} from '@/rpc/api/subscriptions/v1/models_pb';
 import {
   createSubscription,
   listSubscriptions,
 } from '@/rpc/api/subscriptions/v1/subscriptions-SubscriptionsService_connectquery'
+
+import type { PaymentMethodsConfig } from '@/rpc/api/subscriptions/v1/models_pb';
+
 
 export const StepReviewAndCreate = () => {
   const navigate = useNavigate()
@@ -86,7 +96,7 @@ export const StepReviewAndCreate = () => {
             page: 0,
           },
         }
-      : disableQuery
+      : skipToken
   )
   const couponsQuery = useQuery(listCoupons, {
     pagination: {
@@ -98,9 +108,14 @@ export const StepReviewAndCreate = () => {
 
   const createSubscriptionMutation = useMutation(createSubscription, {
     onSuccess: async () => {
-      queryClient.invalidateQueries({ queryKey: [listSubscriptions.service.typeName] })
+      queryClient.invalidateQueries({ queryKey: createConnectQueryKey({
+        schema: listSubscriptions.parent,
+        cardinality: undefined
+      }) })
     },
   })
+
+  const createFeatureMutation = useMutation(createFeature)
 
   const allComponents = componentsQuery.data?.components || []
   const includedComponents = allComponents.filter(c => !state.components.removed.includes(c.id))
@@ -111,6 +126,17 @@ export const StepReviewAndCreate = () => {
 
   const selectedCoupons =
     couponsQuery.data?.coupons.filter(c => state.coupons.some(sc => sc.couponId === c.id)) || []
+
+  // Mirror backend discount.rs ordering: percentage first (customer-friendly),
+  // tiebreak by coupon.id. Used everywhere coupons are displayed/applied so
+  // the wizard matches the order the invoice will use.
+  const orderedCoupons = [...selectedCoupons].sort((a, b) => {
+    const typeOf = (c: Coupon) => (c.discount?.discountType?.case === 'percentage' ? 0 : 1)
+    const ta = typeOf(a)
+    const tb = typeOf(b)
+    if (ta !== tb) return ta - tb
+    return a.id.localeCompare(b.id)
+  })
 
   if (!currency) {
     return <div>Loading plan...</div>
@@ -123,13 +149,19 @@ export const StepReviewAndCreate = () => {
     switch (type) {
       case 'online':
         // Online without config = inherit from invoicing entity
-        return new PaymentMethodsConfig({ config: { case: 'online', value: new OnlinePayment() } })
+        return create(
+          PaymentMethodsConfigSchema,
+          { config: { case: 'online', value: create(OnlinePaymentSchema) } }
+        );
       case 'bankTransfer':
-        return new PaymentMethodsConfig({
-          config: { case: 'bankTransfer', value: new BankTransfer() },
-        })
+        return create(PaymentMethodsConfigSchema, {
+          config: { case: 'bankTransfer', value: create(BankTransferSchema) },
+        });
       case 'external':
-        return new PaymentMethodsConfig({ config: { case: 'external', value: new External() } })
+        return create(
+          PaymentMethodsConfigSchema,
+          { config: { case: 'external', value: create(ExternalSchema) } }
+        );
       default:
         return undefined
     }
@@ -137,6 +169,11 @@ export const StepReviewAndCreate = () => {
 
   const handleCreate = async () => {
     try {
+      const resolvedEntitlements = await resolveEntitlementSpecs(
+        state.entitlements,
+        req => createFeatureMutation.mutateAsync(req)
+      )
+
       // Map billingDay to billingDayAnchor
       // 'FIRST' = 1st of month (fixed day), 'SUB_START_DAY' = anniversary (undefined)
       const billingDayAnchor = state.billingDay === 'FIRST' ? 1 : state.billingDayAnchor
@@ -218,6 +255,7 @@ export const StepReviewAndCreate = () => {
               couponId: c.couponId,
             })),
           },
+          entitlements: resolvedEntitlements,
         },
       })
       toast.success('Subscription created successfully')
@@ -244,12 +282,9 @@ export const StepReviewAndCreate = () => {
 
   const formatPrice = (price: string | number, currency: string) => {
     const amount = typeof price === 'string' ? parseFloat(price || '0') : price
-    return amount.toLocaleString(undefined, {
-      style: 'currency',
-      currency,
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    })
+    const precision = CURRENCIES[currency]?.precision ?? 2
+    const subunits = Math.round(amount * Math.pow(10, precision))
+    return formatCurrency(subunits, currency)
   }
 
   const getComponentPricing = (component: PriceComponent) => {
@@ -291,19 +326,28 @@ export const StepReviewAndCreate = () => {
     }
   }
 
-  // Calculate coupon discount
-  const getCouponDiscount = (coupon: Coupon, subtotal: number) => {
-    if (!coupon.discount) return 0
+  // Coupon math in subunits using Decimal, matching backend discount.rs:
+  // sequential application with i64-truncation on each step.
+  const couponPrecisionPow10 = new Decimal(10).pow(CURRENCIES[currency]?.precision ?? 2)
 
-    // Handle different discount types
-    if (coupon.discount.discountType?.case === 'percentage') {
-      const percentage = parseFloat(coupon.discount.discountType.value?.percentage || '0')
-      return (subtotal * percentage) / 100
-    } else if (coupon.discount.discountType?.case === 'fixed') {
-      return parseFloat(coupon.discount.discountType.value?.amount || '0')
+  /** Returns the discount in subunits this coupon would apply against `runningSubunits`. */
+  const computeCouponDiscountSubunits = (
+    coupon: Coupon,
+    runningSubunits: Decimal
+  ): Decimal => {
+    const dt = coupon.discount?.discountType
+    if (!dt) return new Decimal(0)
+    if (dt.case === 'percentage') {
+      const pct = new Decimal(dt.value?.percentage || '0')
+      return Decimal.min(runningSubunits.times(pct).div(100), runningSubunits)
     }
-
-    return 0
+    if (dt.case === 'fixed') {
+      // Currency mismatch (coupon vs subscription) will be enforced server-side
+      // by the upcoming preview RPC; the picker filters compatibles for now.
+      const amountSubunits = new Decimal(dt.value?.amount || '0').times(couponPrecisionPow10)
+      return Decimal.min(amountSubunits, runningSubunits)
+    }
+    return new Decimal(0)
   }
 
   return (
@@ -473,7 +517,7 @@ export const StepReviewAndCreate = () => {
                     </CardHeader>
                     <CardContent>
                       <div className="space-y-2">
-                        {selectedCoupons.map(coupon => (
+                        {orderedCoupons.map(coupon => (
                           <div key={coupon.id} className="flex items-center justify-between">
                             <span className="text-sm">{coupon.code}</span>
                             <Badge variant="secondary" size="sm">
@@ -486,6 +530,36 @@ export const StepReviewAndCreate = () => {
                   </Card>
                 )}
               </div>
+            )}
+            {env.entitlementsEnabled && state.entitlements.length > 0 && (
+              <Card>
+                <CardHeader className="flex flex-row items-center gap-2">
+                  <Shield className="h-5 w-5" />
+                  <CardTitle className="text-base">
+                    Entitlements ({state.entitlements.length})
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="space-y-2">
+                    {state.entitlements.map((e, i) => (
+                      <div key={i} className="flex items-center justify-between text-sm">
+                        <span className="font-medium">{e.featureDisplayName}</span>
+                        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                          <span>
+                            {e.featureType === 'boolean'
+                              ? e.boolEnabled !== false
+                                ? 'Enabled'
+                                : 'Disabled'
+                              : e.limit
+                                ? `${e.limit} / ${e.resetPeriodType ?? 'cycle'}`
+                                : 'Unlimited'}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
             )}
           </div>
 
@@ -711,12 +785,19 @@ export const StepReviewAndCreate = () => {
                     }
                   })
 
-                  // Calculate total discount from coupons
-                  let totalDiscount = 0
-                  selectedCoupons.forEach(coupon => {
-                    totalDiscount += getCouponDiscount(coupon, subtotal)
-                  })
-
+                  // Apply coupons sequentially in subunits (matches backend discount.rs).
+                  let runningSubunits = new Decimal(subtotal).times(couponPrecisionPow10)
+                  const couponItems: { coupon: Coupon; discount: number }[] = []
+                  for (const coupon of orderedCoupons) {
+                    const discountSubunits = computeCouponDiscountSubunits(coupon, runningSubunits)
+                      .toDecimalPlaces(0, Decimal.ROUND_DOWN)
+                    runningSubunits = runningSubunits.minus(discountSubunits)
+                    couponItems.push({
+                      coupon,
+                      discount: discountSubunits.div(couponPrecisionPow10).toNumber(),
+                    })
+                  }
+                  const totalDiscount = couponItems.reduce((acc, x) => acc + x.discount, 0)
                   const finalTotal = Math.max(0, subtotal - totalDiscount)
 
                   return (
@@ -726,11 +807,10 @@ export const StepReviewAndCreate = () => {
                         <span className="font-medium">{formatPrice(subtotal, currency)}</span>
                       </div>
 
-                      {/* Show discounts after subtotal */}
-                      {selectedCoupons.length > 0 && totalDiscount > 0 && (
+                      {/* Show discounts after subtotal, in apply order */}
+                      {couponItems.length > 0 && totalDiscount > 0 && (
                         <div className="space-y-1">
-                          {selectedCoupons.map(coupon => {
-                            const discount = getCouponDiscount(coupon, subtotal)
+                          {couponItems.map(({ coupon, discount }) => {
                             if (discount <= 0) return null
                             return (
                               <div
@@ -804,11 +884,13 @@ export const StepReviewAndCreate = () => {
         </Button>
         <Button
           onClick={handleCreate}
-          disabled={createSubscriptionMutation.isPending}
+          disabled={createSubscriptionMutation.isPending || createFeatureMutation.isPending}
           className="min-w-[120px]"
           variant="brand"
         >
-          {createSubscriptionMutation.isPending ? 'Creating...' : 'Create subscription'}
+          {createSubscriptionMutation.isPending || createFeatureMutation.isPending
+            ? 'Creating...'
+            : 'Create subscription'}
         </Button>
       </div>
     </div>

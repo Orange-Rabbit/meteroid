@@ -152,6 +152,18 @@ pub mod conversions {
         }
     }
 
+    impl ProtoConv<String> for chrono::DateTime<chrono::Utc> {
+        fn as_proto(&self) -> String {
+            self.to_rfc3339()
+        }
+
+        fn from_proto_ref(proto: &String) -> Result<Self, tonic::Status> {
+            chrono::DateTime::parse_from_rfc3339(proto)
+                .map(|dt| dt.with_timezone(&chrono::Utc))
+                .map_err(|e| tonic::Status::invalid_argument(format!("Invalid datetime: {e}")))
+        }
+    }
+
     impl ProtoConv<String> for rust_decimal::Decimal {
         fn as_proto(&self) -> String {
             self.to_string()
@@ -172,6 +184,30 @@ pub mod conversions {
         fn from_proto_ref(proto: &String) -> Result<Self, tonic::Status> {
             uuid::Uuid::parse_str(proto)
                 .map_err(|e| tonic::Status::invalid_argument(format!("Invalid uuid: {e}")))
+        }
+    }
+}
+
+pub mod usage {
+    use crate::api::shared::conversions::ProtoConv;
+    use meteroid_store::domain::{Period, Subscription};
+
+    pub fn resolve_usage_period(
+        start_date: Option<&String>,
+        end_date: Option<&String>,
+        subscription: &Subscription,
+    ) -> Result<Period, tonic::Status> {
+        match (start_date, end_date) {
+            (Some(s), Some(e)) => Ok(Period {
+                start: chrono::NaiveDate::from_proto_ref(s)?,
+                end: chrono::NaiveDate::from_proto_ref(e)?,
+            }),
+            _ => Ok(Period {
+                start: subscription.current_period_start,
+                end: subscription
+                    .current_period_end
+                    .unwrap_or_else(|| chrono::Utc::now().date_naive() + chrono::Duration::days(1)),
+            }),
         }
     }
 }

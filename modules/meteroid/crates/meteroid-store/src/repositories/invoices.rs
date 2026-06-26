@@ -1,3 +1,4 @@
+use crate::domain::entity_activity::Actor;
 use crate::domain::enums::InvoiceType;
 use crate::domain::outbox_event::{InvoicePdfGeneratedEvent, OutboxEvent};
 use crate::domain::pgmq::{
@@ -20,15 +21,15 @@ use common_domain::ids::{
     AliasOr, BaseId, ConnectorId, CustomerId, EventId, InvoiceId, StoredDocumentId, SubscriptionId,
     TenantId,
 };
-use diesel_async::scoped_futures::ScopedFutureExt;
 use diesel_models::PgConn;
 use diesel_models::customer_balance_txs::CustomerBalancePendingTxRow;
-use diesel_models::enums::{MrrMovementType, SubscriptionEventType};
+use diesel_models::enums::{MrrMovementType, SubscriptionEventType, SubscriptionStatusEnum};
 use diesel_models::invoices::{InvoiceRow, InvoiceRowNew};
 use diesel_models::subscriptions::SubscriptionRow;
 use error_stack::{Report, bail};
 use rust_decimal::Decimal;
 use rust_decimal::prelude::FromPrimitive;
+use scoped_futures::ScopedFutureExt;
 use std::collections::HashMap;
 use tracing_log::log;
 use uuid::Uuid;
@@ -59,6 +60,13 @@ pub trait InvoiceInterface {
         tenant_id: TenantId,
         parent_invoice_id: InvoiceId,
     ) -> StoreResult<Option<InvoiceId>>;
+
+    /// Lists the per-subscription child invoices merged into the given consolidated parent.
+    async fn list_consolidated_children(
+        &self,
+        tenant_id: TenantId,
+        parent_invoice_id: InvoiceId,
+    ) -> StoreResult<Vec<Invoice>>;
 
     #[allow(clippy::too_many_arguments)]
     async fn list_invoices(
@@ -134,6 +142,7 @@ pub trait InvoiceInterface {
 
     async fn void_invoice(
         &self,
+        actor: Actor,
         id: InvoiceId,
         tenant_id: TenantId,
     ) -> StoreResult<DetailedInvoice>;
@@ -193,6 +202,21 @@ impl InvoiceInterface for Store {
         InvoiceRow::find_child_id_by_parent(&mut conn, tenant_id, parent_invoice_id)
             .await
             .map_err(Into::into)
+    }
+
+    async fn list_consolidated_children(
+        &self,
+        tenant_id: TenantId,
+        parent_invoice_id: InvoiceId,
+    ) -> StoreResult<Vec<Invoice>> {
+        let mut conn = self.get_conn().await?;
+
+        InvoiceRow::list_consolidated_children(&mut conn, tenant_id, parent_invoice_id)
+            .await
+            .map_err(Into::<Report<StoreError>>::into)?
+            .into_iter()
+            .map(TryInto::try_into)
+            .collect()
     }
 
     async fn list_invoices(
@@ -458,6 +482,13 @@ impl InvoiceInterface for Store {
     async fn delete_invoice(&self, id: InvoiceId, tenant_id: TenantId) -> StoreResult<()> {
         let mut conn = self.get_conn().await?;
 
+        // Deleting a consolidated child would sever its parent's audit trail.
+        let invoice: Invoice = InvoiceRow::find_by_id(&mut conn, tenant_id, id)
+            .await
+            .map_err(Into::<Report<StoreError>>::into)
+            .and_then(TryInto::try_into)?;
+        invoice.ensure_not_consolidated_child("delete")?;
+
         InvoiceRow::delete(&mut conn, id, tenant_id)
             .await
             .map_err(Into::<Report<StoreError>>::into)
@@ -465,10 +496,12 @@ impl InvoiceInterface for Store {
 
     async fn void_invoice(
         &self,
+        actor: Actor,
         id: InvoiceId,
         tenant_id: TenantId,
     ) -> StoreResult<DetailedInvoice> {
         self.transaction(|conn| {
+            let actor = &actor;
             async move {
                 // 1. Get and validate the invoice
                 let detailed_invoice = InvoiceRow::find_detailed_by_id(conn, tenant_id, id)
@@ -476,6 +509,10 @@ impl InvoiceInterface for Store {
                     .map_err(Into::<Report<StoreError>>::into)?;
 
                 let invoice: Invoice = detailed_invoice.invoice.try_into()?;
+
+                // A consolidated child is superseded by its parent and never finalized on its own;
+                // it must never be voided independently.
+                invoice.ensure_not_consolidated_child("void")?;
 
                 // 2. Validate invoice can be voided (must be finalized and not paid)
                 if invoice.status != domain::enums::InvoiceStatusEnum::Finalized {
@@ -494,11 +531,44 @@ impl InvoiceInterface for Store {
                     ));
                 }
 
+                // 2b. A consolidated parent activates its member subscriptions only when it is
+                // paid (see `activate_subscription_on_invoice_paid`). Voiding it never pays, so any
+                // member still awaiting that payment (TrialExpired / PendingCharge) would be
+                // stranded with no remaining activation path — its own FinalizeInvoice event has
+                // already no-op'd via `is_consolidated_child()`. Block the void in that case.
+                if invoice.subscription_id.is_none() {
+                    let children = InvoiceRow::list_consolidated_children(conn, tenant_id, id)
+                        .await
+                        .map_err(Into::<Report<StoreError>>::into)?;
+                    let member_sub_ids: Vec<_> =
+                        children.iter().filter_map(|c| c.subscription_id).collect();
+                    if !member_sub_ids.is_empty() {
+                        let members = SubscriptionRow::list_by_ids(conn, &member_sub_ids)
+                            .await
+                            .map_err(Into::<Report<StoreError>>::into)?;
+                        let has_pending_activation = members.iter().any(|s| {
+                            matches!(
+                                s.subscription.status,
+                                SubscriptionStatusEnum::TrialExpired
+                                    | SubscriptionStatusEnum::PendingCharge
+                            )
+                        });
+                        if has_pending_activation {
+                            bail!(StoreError::InvalidArgument(
+                                "Cannot void this consolidated invoice while some of its \
+                                 subscriptions are awaiting this payment to activate"
+                                    .to_string()
+                            ));
+                        }
+                    }
+                }
+
                 // 3. Create credit note for the full invoice amount using shared implementation
                 let _credit_note = create_credit_note_tx(
                     self,
                     conn,
                     tenant_id,
+                    actor,
                     CreateCreditNoteTxParams {
                         invoice,
                         line_items: None, // Credit all line items
@@ -507,6 +577,7 @@ impl InvoiceInterface for Store {
                         reason: Some("Invoice voided".to_string()),
                         memo: None,
                         credit_type: CreditType::CreditToBalance,
+                        from_proration: false,
                     },
                 )
                 .await?;
@@ -525,8 +596,10 @@ impl InvoiceInterface for Store {
 
                 // 6. Emit outbox event for voided invoice
                 self.internal
-                    .insert_outbox_events_tx(
+                    .record_outbox_batch_tx(
                         conn,
+                        tenant_id,
+                        actor,
                         vec![domain::outbox_event::OutboxEvent::invoice_voided(
                             (&voided_invoice.invoice).into(),
                         )],
@@ -546,6 +619,15 @@ impl InvoiceInterface for Store {
         tenant_id: TenantId,
     ) -> StoreResult<DetailedInvoice> {
         let mut conn = self.get_conn().await?;
+
+        // A consolidated child is never finalized on its own, so it can't legitimately become
+        // uncollectible; guard explicitly rather than relying on the SQL status filter silently
+        // no-op'ing.
+        let invoice: Invoice = InvoiceRow::find_by_id(&mut conn, tenant_id, id)
+            .await
+            .map_err(Into::<Report<StoreError>>::into)
+            .and_then(TryInto::try_into)?;
+        invoice.ensure_not_consolidated_child("mark as uncollectible")?;
 
         InvoiceRow::mark_as_uncollectible(&mut conn, id, tenant_id)
             .await
@@ -573,9 +655,11 @@ async fn process_mrr(inserted: &Invoice, conn: &mut PgConn) -> StoreResult<()> {
     if inserted.invoice_type == InvoiceType::Recurring
         || inserted.invoice_type == InvoiceType::Adjustment
     {
-        let subscription_id = inserted
-            .subscription_id
-            .ok_or(StoreError::ValueNotFound("subscription_id is null".into()))?;
+        // A consolidated invoice has no subscription_id; its members already logged their MRR.
+        let subscription_id = match inserted.subscription_id {
+            Some(id) => id,
+            None => return Ok(()),
+        };
 
         let subscription_events = diesel_models::subscription_events::SubscriptionEventRow::fetch_by_subscription_id_and_date(
             conn,
@@ -759,10 +843,15 @@ async fn insert_invoice_batch_tx(
             .map_err(Into::into)
             .and_then(std::convert::TryInto::try_into)?;
 
+        // Invoice creation here is always system-triggered (billing pipeline,
+        // subscription activation, slot transactions). User-initiated invoice
+        // creation goes through a different path with a typed Actor.
         store
             .internal
-            .insert_outbox_events_tx(
+            .record_outbox_batch_tx(
                 tx,
+                final_invoice.tenant_id,
+                &Actor::System,
                 vec![OutboxEvent::invoice_created((&final_invoice).into())],
             )
             .await?;

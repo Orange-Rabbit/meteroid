@@ -1,4 +1,5 @@
 use crate::StoreResult;
+use crate::domain::entity_activity::Actor;
 use crate::domain::outbox_event::{InvoicePdfGeneratedEvent, OutboxEvent};
 use crate::domain::pgmq::{PaymentRequestEvent, PgmqMessageNew, PgmqQueue, SendEmailRequest};
 use crate::domain::{
@@ -7,15 +8,14 @@ use crate::domain::{
 use crate::repositories::customer_payment_methods::CustomerPaymentMethodsInterface;
 use crate::repositories::customers::CustomersInterfaceAuto;
 use crate::repositories::invoicing_entities::InvoicingEntityInterfaceAuto;
-use crate::repositories::outbox::OutboxInterface;
 use crate::repositories::payment_transactions::PaymentTransactionInterface;
 use crate::repositories::pgmq::PgmqInterface;
 use crate::repositories::{InvoiceInterface, SubscriptionInterface};
 use crate::services::Services;
 use chrono::Utc;
 use common_domain::ids::TenantId;
-use diesel_async::scoped_futures::ScopedFutureExt;
 use diesel_models::invoices::InvoiceRow;
+use scoped_futures::ScopedFutureExt;
 
 impl Services {
     pub async fn on_invoice_accounting_pdf_generated(
@@ -38,7 +38,20 @@ impl Services {
             .get_invoicing_entity(tenant_id, Some(customer.invoicing_entity_id))
             .await?;
 
-        if let Some(subscription_id) = invoice.subscription_id {
+        // A consolidated (merged) invoice has no subscription_id of its own. Resolve the
+        // payment method and auto-charge settings from one of its member subscriptions (all
+        // members share the same resolved payment method by construction).
+        let payment_subscription_id = match invoice.subscription_id {
+            Some(id) => Some(id),
+            None => self
+                .store
+                .list_consolidated_children(tenant_id, invoice.id)
+                .await?
+                .into_iter()
+                .find_map(|child| child.subscription_id),
+        };
+
+        if let Some(subscription_id) = payment_subscription_id {
             // 3 cases here :
             // - Already paid (checkout flow). We send the initial email with receipt and invoice
             // - collection_method == SendInvoice . We send the invoice, with a payment link if applicable
@@ -51,17 +64,14 @@ impl Services {
                     .await?;
 
                 if let Some(receipt) = receipt {
-                    // TODO we send invoice paid twice without making sure we have the tx receipt. LEt's check the flow one more time
-                    let label = "Thank you for your payment".to_string();
-
-                    let event: StoreResult<PgmqMessageNew> = SendEmailRequest::InvoicePaid {
+                    let email_msg: PgmqMessageNew = SendEmailRequest::InvoicePaid {
                         tenant_id,
                         invoice_id: invoice.id,
                         invoice_number: invoice.invoice_number,
                         invoicing_entity_id: invoicing_entity.id,
                         invoice_date: invoice.invoice_date,
                         invoice_due_date: invoice.due_at.map_or(invoice.invoice_date, |d| d.date()),
-                        label,
+                        label: "Thank you for your payment".to_string(),
                         amount_paid: receipt.amount,
                         currency: invoice.currency,
                         company_name: invoice.seller_details.legal_name.clone(),
@@ -69,11 +79,13 @@ impl Services {
                         invoicing_emails: customer.invoicing_emails,
                         invoice_pdf_id: event.pdf_id,
                         receipt_pdf_id: receipt.receipt_pdf_id,
+                        agg_customer_id: Some(invoice.customer_id),
+                        agg_subscription_id: invoice.subscription_id,
                     }
-                    .try_into();
+                    .try_into()?;
 
                     self.store
-                        .pgmq_send_batch(PgmqQueue::SendEmailRequest, vec![event?])
+                        .pgmq_send_batch(PgmqQueue::SendEmailRequest, vec![email_msg])
                         .await?;
 
                     return Ok(());
@@ -142,7 +154,7 @@ impl Services {
             .map(|plan| format!("Your {} subscription", plan))
             .unwrap_or_else(|| "Invoice for services".to_string());
 
-        let issue_event = SendEmailRequest::InvoiceReady {
+        let evt: PgmqMessageNew = SendEmailRequest::InvoiceReady {
             tenant_id: invoice.tenant_id,
             invoice_id: invoice.id,
             invoicing_entity_id: invoice.seller_details.id,
@@ -156,15 +168,14 @@ impl Services {
             invoicing_emails: customer.invoicing_emails,
             invoice_pdf_id: event.pdf_id,
             amount_due: invoice.amount_due,
-        };
-
-        let evt: StoreResult<PgmqMessageNew> = issue_event.try_into();
+            agg_customer_id: Some(invoice.customer_id),
+            agg_subscription_id: invoice.subscription_id,
+        }
+        .try_into()?;
 
         self.store
-            .pgmq_send_batch(PgmqQueue::SendEmailRequest, vec![evt?])
-            .await?;
-
-        Ok(())
+            .pgmq_send_batch(PgmqQueue::SendEmailRequest, vec![evt])
+            .await
     }
 
     /// Handle $0 invoices (e.g., 100% coupon) - mark as paid and emit invoice_paid event.
@@ -192,7 +203,13 @@ impl Services {
                     // Emit invoice paid event - this triggers on_invoice_paid which handles
                     // subscription activation (TrialExpired → Active)
                     self.store
-                        .insert_outbox_event_tx(conn, OutboxEvent::invoice_paid(invoice.into()))
+                        .internal
+                        .record_outbox_batch_tx(
+                            conn,
+                            tenant_id,
+                            &Actor::System,
+                            vec![OutboxEvent::invoice_paid(invoice.into())],
+                        )
                         .await?;
 
                     tracing::info!(

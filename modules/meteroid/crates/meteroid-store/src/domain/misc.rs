@@ -1,5 +1,4 @@
-use chrono::NaiveDate;
-use common_domain::ids::{OrganizationId, TenantId};
+use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 use uuid::Uuid;
 
 pub struct PaginationRequest {
@@ -64,49 +63,36 @@ impl<T> From<diesel_models::extend::cursor_pagination::CursorPaginatedVec<T>>
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-pub struct TenantContext {
-    // pub actor: Actor, // TODO
-    pub actor: Uuid,
-    pub tenant_id: TenantId,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct OrganizationContext {
-    pub actor: Actor,
-    pub organization_id: OrganizationId,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct Context {
-    pub actor: Actor,
-    pub tenant_id: Option<TenantId>,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub enum Actor {
-    System,
-    User(Uuid),
-    ApiKey(Uuid),
-}
-
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct Period {
     pub start: NaiveDate,
     pub end: NaiveDate,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+pub struct UsagePeriod {
+    pub start: NaiveDateTime,
+    pub end: NaiveDateTime,
+}
+
+impl From<Period> for UsagePeriod {
+    fn from(p: Period) -> Self {
+        UsagePeriod {
+            start: p.start.and_time(NaiveTime::MIN),
+            end: p.end.and_time(NaiveTime::MIN),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ComponentPeriods {
     pub arrear: Option<Period>,
     pub advance: Option<Period>,
+    /// Proration factor applied to the advance-billed line (first partial period).
     pub proration_factor: Option<f64>,
-}
-
-#[derive(Debug, Clone)]
-pub struct WebhookPage<T> {
-    pub data: Vec<T>,
-    pub done: bool,
-    pub iterator: Option<String>,
-    pub prev_iterator: Option<String>,
+    /// Proration factor applied to the arrears-billed line when its window was
+    /// shrunk by a temporal bound (e.g. a fixed-rate arrears component added or
+    /// removed mid-period). Kept separate from `proration_factor` so it never
+    /// affects the advance line of a component billed on the same period.
+    pub arrear_proration_factor: Option<f64>,
 }

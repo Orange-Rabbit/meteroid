@@ -1,4 +1,4 @@
-use chrono::{NaiveDate, Timelike};
+use chrono::{NaiveDateTime, Timelike};
 use common_domain::ids::{CustomerId, TenantId};
 use common_grpc::middleware::client::LayeredClientService;
 
@@ -18,7 +18,7 @@ use meteroid_store::clients::usage::{
     EventSearchOptions, EventSearchResult, GroupedUsageData, UsageClient, UsageData,
     WindowedUsageData, WindowedUsagePoint,
 };
-use meteroid_store::domain::{BillableMetric, Period};
+use meteroid_store::domain::{BillableMetric, UsagePeriod};
 use meteroid_store::errors::StoreError;
 use meteroid_store::{StoreResult, domain};
 use rust_decimal::Decimal;
@@ -120,7 +120,7 @@ impl UsageClient for MeteringUsageClient {
         tenant_id: &TenantId,
         customer_id: &CustomerId,
         metric: &BillableMetric,
-        period: Period,
+        period: UsagePeriod,
     ) -> StoreResult<UsageData> {
         if period.start >= period.end {
             bail!(StoreError::InvalidArgument("invalid period".to_string()));
@@ -132,8 +132,8 @@ impl UsageClient for MeteringUsageClient {
             code: metric.code.clone(),
             meter_aggregation_type: map_aggregation_type(&metric.aggregation_type),
             customer_ids: vec![customer_id.to_string()],
-            from: Some(date_to_timestamp(period.start)),
-            to: Some(date_to_timestamp(period.end)),
+            from: Some(datetime_to_timestamp(period.start)),
+            to: Some(datetime_to_timestamp(period.end)),
             group_by_properties: metric
                 .usage_group_key
                 .as_ref()
@@ -186,12 +186,63 @@ impl UsageClient for MeteringUsageClient {
         Ok(UsageData { data, period })
     }
 
+    async fn fetch_total_usage(
+        &self,
+        tenant_id: &TenantId,
+        customer_id: &CustomerId,
+        metric: &BillableMetric,
+        period: UsagePeriod,
+    ) -> StoreResult<Decimal> {
+        if period.start >= period.end {
+            bail!(StoreError::InvalidArgument("invalid period".to_string()));
+        }
+
+        let request = QueryMeterRequest {
+            tenant_id: tenant_id.as_proto(),
+            meter_slug: metric.id.to_string(),
+            code: metric.code.clone(),
+            meter_aggregation_type: map_aggregation_type(&metric.aggregation_type),
+            customer_ids: vec![customer_id.to_string()],
+            from: Some(datetime_to_timestamp(period.start)),
+            to: Some(datetime_to_timestamp(period.end)),
+            group_by_properties: vec![],
+            window_size: QueryWindowSize::AggregateAll.into(),
+            timezone: None,
+            segmentation_filter: build_segmentation_filter(metric.segmentation_matrix.clone()),
+            value_property: metric.aggregation_key.clone(),
+        };
+
+        let mut client = self.usage_grpc_client.clone();
+        let response: QueryMeterResponse =
+            match tokio::time::timeout(GRPC_TIMEOUT, client.query_meter(request)).await {
+                Ok(result) => result
+                    .change_context(StoreError::MeteringServiceError)
+                    .attach("Failed to query meter (total)")?
+                    .into_inner(),
+                Err(_) => {
+                    log::error!(
+                        "query_meter (total) timed out after {} seconds",
+                        GRPC_TIMEOUT.as_secs()
+                    );
+                    return Err(error_stack::Report::new(StoreError::MeteringServiceError)
+                        .attach("query_meter (total) timed out"));
+                }
+            };
+
+        Ok(response
+            .usage
+            .into_iter()
+            .filter_map(|u| u.value.and_then(|v| v.try_into().ok()))
+            .next()
+            .unwrap_or(Decimal::ZERO))
+    }
+
     async fn fetch_windowed_usage(
         &self,
         tenant_id: &TenantId,
         customer_id: &CustomerId,
         metric: &BillableMetric,
-        period: Period,
+        period: UsagePeriod,
     ) -> StoreResult<WindowedUsageData> {
         if period.start >= period.end {
             bail!(StoreError::InvalidArgument("invalid period".to_string()));
@@ -203,8 +254,8 @@ impl UsageClient for MeteringUsageClient {
             code: metric.code.clone(),
             meter_aggregation_type: map_aggregation_type(&metric.aggregation_type),
             customer_ids: vec![customer_id.to_string()],
-            from: Some(date_to_timestamp(period.start)),
-            to: Some(date_to_timestamp(period.end)),
+            from: Some(datetime_to_timestamp(period.start)),
+            to: Some(datetime_to_timestamp(period.end)),
             group_by_properties: metric
                 .usage_group_key
                 .as_ref()
@@ -259,7 +310,7 @@ impl UsageClient for MeteringUsageClient {
         tenant_id: &TenantId,
         customer_id: Option<&CustomerId>,
         metric: &BillableMetric,
-        period: Period,
+        period: UsagePeriod,
     ) -> StoreResult<UsageData> {
         if period.start >= period.end {
             bail!(StoreError::InvalidArgument("invalid period".to_string()));
@@ -275,8 +326,8 @@ impl UsageClient for MeteringUsageClient {
             code: metric.code.clone(),
             meter_aggregation_type: map_aggregation_type(&metric.aggregation_type),
             customer_ids,
-            from: Some(date_to_timestamp(period.start)),
-            to: Some(date_to_timestamp(period.end)),
+            from: Some(datetime_to_timestamp(period.start)),
+            to: Some(datetime_to_timestamp(period.end)),
             group_by_properties: metric
                 .usage_group_key
                 .as_ref()
@@ -409,10 +460,9 @@ impl UsageClient for MeteringUsageClient {
     }
 }
 
-fn date_to_timestamp(dt: NaiveDate) -> prost_types::Timestamp {
-    let dt_at_start_of_day = dt.and_hms_opt(0, 0, 0).unwrap();
+fn datetime_to_timestamp(dt: NaiveDateTime) -> prost_types::Timestamp {
     prost_types::Timestamp {
-        seconds: dt_at_start_of_day.and_utc().timestamp(),
-        nanos: dt_at_start_of_day.nanosecond() as i32,
+        seconds: dt.and_utc().timestamp(),
+        nanos: dt.nanosecond() as i32,
     }
 }

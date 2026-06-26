@@ -10,11 +10,11 @@ use crate::utils::local_id::{IdType, LocalId};
 use chrono::NaiveTime;
 use common_domain::ids::{InvoiceId, TenantId};
 use common_utils::decimals::ToSubunit;
-use diesel_async::scoped_futures::ScopedFutureExt;
 use diesel_models::PgConn;
 use diesel_models::invoices::{InvoiceRow, InvoiceRowPatch};
 use error_stack::bail;
 use rust_decimal::Decimal;
+use scoped_futures::ScopedFutureExt;
 use std::collections::HashMap;
 
 #[allow(clippy::large_enum_variant)]
@@ -55,6 +55,7 @@ impl Services {
                 "Can only preview edits for draft invoices".into(),
             ));
         }
+        invoice.ensure_not_consolidated_child("edit")?;
 
         let updated_invoice = self
             .prepare_invoice_update(invoice, tenant_id, params)
@@ -78,6 +79,7 @@ impl Services {
                 "Can only edit draft invoices".into(),
             ));
         }
+        invoice.ensure_not_consolidated_child("edit")?;
 
         let invoice = self
             .prepare_invoice_update(invoice, tenant_id, params)

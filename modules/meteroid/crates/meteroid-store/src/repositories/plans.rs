@@ -1,6 +1,8 @@
 use crate::StoreResult;
+use crate::domain::entity_activity::{Activity, ActivityType, Actor, AuditInput, EntityType};
 use crate::store::{PgConn, Store};
 
+use crate::domain::entitlements::Entitlement;
 use crate::domain::price_components::FeeType;
 use crate::domain::prices::{
     LegacyPricingData, extract_fee_structure, extract_legacy_pricing, extract_pricing,
@@ -12,13 +14,14 @@ use crate::domain::{
     ProductFamilyOverview, SelfServicePlan, TrialPatch,
 };
 use crate::errors::StoreError;
+use crate::repositories::entitlements::insert_entitlement_specs;
 use crate::repositories::price_components::resolve_component_internal;
-use common_domain::ids::PriceId;
 use common_domain::ids::{
     BaseId, PlanId, PlanVersionId, PriceComponentId, ProductFamilyId, ProductId, TenantId,
 };
+use common_domain::ids::{EntitlementEntityId, PriceId};
 use common_eventbus::Event;
-use diesel_async::scoped_futures::ScopedFutureExt;
+use diesel_models::entitlements::EntitlementRow;
 use diesel_models::plan_component_prices::{PlanComponentPriceRow, PlanComponentPriceRowNew};
 use diesel_models::plan_versions::{
     PlanVersionRow, PlanVersionRowNew, PlanVersionRowPatch, PlanVersionTrialRowPatch,
@@ -32,12 +35,12 @@ use diesel_models::product_families::ProductFamilyRow;
 use diesel_models::products::{ProductRow, ProductRowNew};
 use diesel_models::tenants::TenantRow;
 use error_stack::Report;
+use scoped_futures::ScopedFutureExt;
 use std::collections::HashMap;
-use uuid::Uuid;
 
 #[async_trait::async_trait]
 pub trait PlansInterface {
-    async fn insert_plan(&self, plan: FullPlanNew) -> StoreResult<FullPlan>;
+    async fn insert_plan(&self, actor: Actor, plan: FullPlanNew) -> StoreResult<FullPlan>;
 
     async fn get_plan(
         &self,
@@ -109,29 +112,41 @@ pub trait PlansInterface {
         &self,
         plan_version_id: PlanVersionId,
         auth_tenant_id: TenantId,
-        auth_actor: Uuid,
     ) -> StoreResult<PlanVersion>;
 
     async fn publish_plan_version(
         &self,
+        actor: Actor,
         plan_version_id: PlanVersionId,
         auth_tenant_id: TenantId,
-        auth_actor: Uuid,
     ) -> StoreResult<PlanVersion>;
 
     async fn discard_draft_plan_version(
         &self,
+        actor: Actor,
         plan_version_id: PlanVersionId,
         auth_tenant_id: TenantId,
-        auth_actor: Uuid,
     ) -> StoreResult<()>;
 
-    async fn patch_published_plan(&self, patch: PlanPatch) -> StoreResult<PlanOverview>;
+    async fn patch_published_plan(
+        &self,
+        actor: Actor,
+        patch: PlanPatch,
+    ) -> StoreResult<PlanOverview>;
 
-    async fn patch_draft_plan(&self, patch: PlanAndVersionPatch) -> StoreResult<PlanWithVersion>;
+    async fn patch_draft_plan(
+        &self,
+        actor: Actor,
+        patch: PlanAndVersionPatch,
+    ) -> StoreResult<PlanWithVersion>;
 
-    async fn patch_trial(&self, patch: TrialPatch) -> StoreResult<PlanWithVersion>;
-    async fn archive_plan(&self, id: PlanId, auth_tenant_id: TenantId) -> StoreResult<()>;
+    async fn patch_trial(&self, actor: Actor, patch: TrialPatch) -> StoreResult<PlanWithVersion>;
+    async fn archive_plan(
+        &self,
+        actor: Actor,
+        id: PlanId,
+        auth_tenant_id: TenantId,
+    ) -> StoreResult<()>;
     async fn unarchive_plan(&self, id: PlanId, auth_tenant_id: TenantId) -> StoreResult<()>;
 
     async fn list_self_service_plans(
@@ -151,9 +166,9 @@ pub trait PlansInterface {
     #[allow(clippy::too_many_arguments)]
     async fn replace_plan_version(
         &self,
+        typed_actor: Actor,
         plan_id: PlanId,
         tenant_id: TenantId,
-        actor: Uuid,
         name: String,
         description: Option<String>,
         version: PlanVersionNewInternal,
@@ -274,6 +289,22 @@ async fn convert_full_plan_row(
             .collect::<Result<HashMap<_, _>, _>>()?
     };
 
+    let entitlement_rows = EntitlementRow::list_by_entity(
+        conn,
+        tenant_id,
+        EntitlementEntityId::PlanVersion(version.id),
+    )
+    .await
+    .map_err(Into::<Report<StoreError>>::into)?;
+
+    let entitlements: Vec<Entitlement> = entitlement_rows
+        .into_iter()
+        .map(TryInto::try_into)
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut version = version;
+    version.entitlements = entitlements;
+
     Ok(FullPlan {
         plan,
         version,
@@ -285,7 +316,7 @@ async fn convert_full_plan_row(
 
 #[async_trait::async_trait]
 impl PlansInterface for Store {
-    async fn insert_plan(&self, full_plan: FullPlanNew) -> StoreResult<FullPlan> {
+    async fn insert_plan(&self, actor: Actor, full_plan: FullPlanNew) -> StoreResult<FullPlan> {
         let mut conn = self.get_conn().await?;
 
         let FullPlanNew {
@@ -293,6 +324,7 @@ impl PlansInterface for Store {
             version,
             price_components,
         } = full_plan;
+        let version_entitlements = version.entitlements.clone();
 
         let product_family: ProductFamilyOverview =
             ProductFamilyRow::find_by_id(&mut conn, plan.product_family_id, plan.tenant_id)
@@ -306,6 +338,7 @@ impl PlansInterface for Store {
 
         let res = self
             .transaction_with(&mut conn, |conn| {
+                let actor = &actor;
                 async move {
                     let plan_to_insert: PlanRowNew = plan.into_raw(product_family.id);
                     let inserted: Plan = plan_to_insert
@@ -319,12 +352,11 @@ impl PlansInterface for Store {
                         internal: version,
                         plan_id: inserted.id,
                         version: 1,
-                        created_by: inserted.created_by,
                     }
                     // TODO parameter
                     .into_raw(tenant.reporting_currency);
 
-                    let inserted_plan_version_new: PlanVersion = plan_version_to_insert
+                    let mut inserted_plan_version_new: PlanVersion = plan_version_to_insert
                         .insert(conn)
                         .await
                         .map(Into::into)
@@ -359,7 +391,6 @@ impl PlansInterface for Store {
                             conn,
                             p,
                             inserted.tenant_id,
-                            inserted.created_by,
                             product_family.id,
                             &inserted_plan_version_new.currency,
                             true,
@@ -398,6 +429,18 @@ impl PlansInterface for Store {
 
                     let inserted_price_components = all_inserted_components;
 
+                    if !version_entitlements.is_empty() {
+                        inserted_plan_version_new.entitlements = insert_entitlement_specs(
+                            conn,
+                            version_entitlements,
+                            common_domain::ids::EntitlementEntityId::PlanVersion(
+                                inserted_plan_version_new.id,
+                            ),
+                            inserted.tenant_id,
+                        )
+                        .await?;
+                    }
+
                     // Emit outbox event for webhooks
                     let plan_event = crate::domain::outbox_event::PlanEvent::new(
                         updated.id,
@@ -412,8 +455,10 @@ impl PlansInterface for Store {
                         updated.created_at,
                     );
                     self.internal
-                        .insert_outbox_events_tx(
+                        .record_outbox_batch_tx(
                             conn,
+                            updated.tenant_id,
+                            actor,
                             vec![crate::domain::outbox_event::OutboxEvent::plan_created(
                                 plan_event,
                             )],
@@ -435,9 +480,9 @@ impl PlansInterface for Store {
         let _ = self
             .eventbus
             .publish(Event::plan_created_draft(
-                res.plan.created_by,
-                res.version.id.as_uuid(),
-                res.plan.tenant_id.as_uuid(),
+                actor,
+                res.version.id,
+                res.plan.tenant_id,
             ))
             .await;
 
@@ -621,7 +666,6 @@ impl PlansInterface for Store {
         &self,
         plan_version_id: PlanVersionId,
         auth_tenant_id: TenantId,
-        auth_actor: Uuid,
     ) -> StoreResult<PlanVersion> {
         self.transaction(|conn| {
             async move {
@@ -669,7 +713,6 @@ impl PlansInterface for Store {
                     net_terms: original.net_terms,
                     currency: original.currency,
                     billing_cycles: original.billing_cycles,
-                    created_by: auth_actor,
                     uses_product_pricing: true,
                 }
                 .insert(conn)
@@ -767,7 +810,6 @@ impl PlansInterface for Store {
                                     id: ProductId::new(),
                                     name: comp.name.clone(),
                                     description: None,
-                                    created_by: auth_actor,
                                     tenant_id: auth_tenant_id,
                                     product_family_id,
                                     fee_type: fee_type_enum.into(),
@@ -810,7 +852,6 @@ impl PlansInterface for Store {
                                         ))
                                     })?,
                                     tenant_id: auth_tenant_id,
-                                    created_by: auth_actor,
                                     catalog: true,
                                 }
                                 .insert(conn)
@@ -844,6 +885,15 @@ impl PlansInterface for Store {
                 .await
                 .map_err(Into::<Report<StoreError>>::into)?;
 
+                EntitlementRow::clone_all_for_plan_version(
+                    conn,
+                    original.id,
+                    new.id,
+                    auth_tenant_id,
+                )
+                .await
+                .map_err(Into::<Report<StoreError>>::into)?;
+
                 PlanRowPatch {
                     id: original.plan_id,
                     tenant_id: original.tenant_id,
@@ -866,12 +916,13 @@ impl PlansInterface for Store {
 
     async fn publish_plan_version(
         &self,
+        actor: Actor,
         plan_version_id: PlanVersionId,
         auth_tenant_id: TenantId,
-        auth_actor: Uuid,
     ) -> StoreResult<PlanVersion> {
         let res: PlanVersion = self
             .transaction(|conn| {
+                let actor = &actor;
                 async move {
                     // TODO validations
                     // - all components on committed must have values for all periods
@@ -913,8 +964,10 @@ impl PlansInterface for Store {
                         plan.created_at,
                     );
                     self.internal
-                        .insert_outbox_events_tx(
+                        .record_outbox_batch_tx(
                             conn,
+                            auth_tenant_id,
+                            actor,
                             vec![crate::domain::outbox_event::OutboxEvent::plan_published(
                                 plan_event,
                             )],
@@ -930,9 +983,9 @@ impl PlansInterface for Store {
         let _ = self
             .eventbus
             .publish(Event::plan_published_version(
-                auth_actor,
-                plan_version_id.as_uuid(),
-                auth_tenant_id.as_uuid(),
+                actor,
+                plan_version_id,
+                auth_tenant_id,
             ))
             .await;
 
@@ -941,158 +994,253 @@ impl PlansInterface for Store {
 
     async fn discard_draft_plan_version(
         &self,
+        actor: Actor,
         plan_version_id: PlanVersionId,
         auth_tenant_id: TenantId,
-        auth_actor: Uuid,
     ) -> StoreResult<()> {
-        let res = self
-            .transaction(|conn| {
-                async move {
-                    let original = PlanVersionRow::find_by_id_and_tenant_id(
-                        conn,
-                        plan_version_id,
-                        auth_tenant_id,
-                    )
-                    .await
-                    .map_err(Into::<Report<StoreError>>::into)?;
-
-                    PlanRowPatch {
-                        id: original.plan_id,
-                        tenant_id: original.tenant_id,
-                        name: None,
-                        description: None,
-                        active_version_id: None,
-                        draft_version_id: Some(None),
-                        self_service_rank: None,
-                    }
-                    .update(conn)
-                    .await
-                    .map_err(Into::<Report<StoreError>>::into)?;
-
-                    PlanVersionRow::delete_draft(conn, plan_version_id, auth_tenant_id)
+        self.transaction(|conn| {
+            let actor = &actor;
+            async move {
+                let original =
+                    PlanVersionRow::find_by_id_and_tenant_id(conn, plan_version_id, auth_tenant_id)
                         .await
                         .map_err(Into::<Report<StoreError>>::into)?;
 
-                    // only deletes if no versions left
-                    PlanRow::delete(conn, original.plan_id, auth_tenant_id)
-                        .await
-                        .map_err(Into::<Report<StoreError>>::into)?;
+                let plan_id = original.plan_id;
 
-                    Ok(())
+                PlanRowPatch {
+                    id: plan_id,
+                    tenant_id: original.tenant_id,
+                    name: None,
+                    description: None,
+                    active_version_id: None,
+                    draft_version_id: Some(None),
+                    self_service_rank: None,
                 }
-                .scope_boxed()
-            })
-            .await?;
+                .update(conn)
+                .await
+                .map_err(Into::<Report<StoreError>>::into)?;
+
+                PlanVersionRow::delete_draft(conn, plan_version_id, auth_tenant_id)
+                    .await
+                    .map_err(Into::<Report<StoreError>>::into)?;
+
+                // only deletes if no versions left
+                PlanRow::delete(conn, plan_id, auth_tenant_id)
+                    .await
+                    .map_err(Into::<Report<StoreError>>::into)?;
+
+                let activity = Activity::new(
+                    ActivityType::PlanDraftDiscarded,
+                    EntityType::Plan,
+                    plan_id.as_uuid(),
+                )
+                .with_metadata(serde_json::json!({
+                    "plan_version_id": plan_version_id.to_string(),
+                }));
+                self.internal
+                    .record_audit_tx(conn, auth_tenant_id, actor, AuditInput::Activity(activity))
+                    .await
+            }
+            .scope_boxed()
+        })
+        .await?;
 
         let _ = self
             .eventbus
             .publish(Event::plan_discarded_version(
-                auth_actor,
-                plan_version_id.as_uuid(),
-                auth_tenant_id.as_uuid(),
+                actor,
+                plan_version_id,
+                auth_tenant_id,
             ))
             .await;
 
-        Ok(res)
+        Ok(())
     }
 
-    async fn patch_published_plan(&self, patch: PlanPatch) -> StoreResult<PlanOverview> {
-        let mut conn = self.get_conn().await?;
-
+    async fn patch_published_plan(
+        &self,
+        actor: Actor,
+        patch: PlanPatch,
+    ) -> StoreResult<PlanOverview> {
         let patch: PlanRowPatch = patch.into();
+        let mut changed: Vec<&'static str> = Vec::new();
+        if patch.name.is_some() {
+            changed.push("name");
+        }
+        if patch.description.is_some() {
+            changed.push("description");
+        }
+        if patch.self_service_rank.is_some() {
+            changed.push("self_service_rank");
+        }
 
-        let plan = patch
-            .update(&mut conn)
-            .await
-            .map_err(Into::<Report<StoreError>>::into)?;
+        self.transaction(|conn| {
+            let actor = &actor;
+            let patch = &patch;
+            let changed = &changed;
+            async move {
+                let plan = patch
+                    .update(conn)
+                    .await
+                    .map_err(Into::<Report<StoreError>>::into)?;
 
-        PlanRow::get_overview_by_id(&mut conn, plan.id, plan.tenant_id)
-            .await
-            .map_err(Into::into)
-            .map(Into::into)
-    }
-
-    async fn patch_draft_plan(&self, patch: PlanAndVersionPatch) -> StoreResult<PlanWithVersion> {
-        let mut conn = self.get_conn().await?;
-
-        let version = self
-            .transaction(|conn| {
-                async move {
-                    let patch_version: PlanVersionRowPatch = patch.version.into();
-
-                    let patched_version = patch_version
-                        .update_draft(conn)
+                let overview: PlanOverview =
+                    PlanRow::get_overview_by_id(conn, plan.id, plan.tenant_id)
                         .await
-                        .map_err(Into::<Report<StoreError>>::into)?;
+                        .map_err(Into::<Report<StoreError>>::into)
+                        .map(Into::into)?;
 
-                    let patch_plan: PlanRowPatch = PlanPatch {
-                        id: patched_version.plan_id,
-                        tenant_id: patched_version.tenant_id,
-                        name: patch.name,
-                        description: patch.description,
-                        active_version_id: None,
-                        self_service_rank: None,
-                    }
-                    .into();
-
-                    patch_plan
-                        .update(conn)
-                        .await
-                        .map_err(Into::<Report<StoreError>>::into)?;
-
-                    Ok(patched_version)
+                if !changed.is_empty() {
+                    let activity = Activity::new(
+                        ActivityType::EntityUpdated,
+                        EntityType::Plan,
+                        plan.id.as_uuid(),
+                    )
+                    .with_metadata(serde_json::json!({
+                        "changes": changed
+                            .iter()
+                            .map(|f| serde_json::json!({ "field": f }))
+                            .collect::<Vec<_>>(),
+                    }));
+                    self.internal
+                        .record_audit_tx(
+                            conn,
+                            plan.tenant_id,
+                            actor,
+                            AuditInput::Activity(activity),
+                        )
+                        .await?;
                 }
-                .scope_boxed()
-            })
-            .await?;
 
-        PlanRow::get_with_version(&mut conn, version.id, version.tenant_id)
-            .await
-            .map_err(Into::into)
-            .map(Into::into)
+                Ok(overview)
+            }
+            .scope_boxed()
+        })
+        .await
     }
 
-    async fn patch_trial(&self, patch: TrialPatch) -> StoreResult<PlanWithVersion> {
-        let mut conn = self.get_conn().await?;
+    async fn patch_draft_plan(
+        &self,
+        actor: Actor,
+        patch: PlanAndVersionPatch,
+    ) -> StoreResult<PlanWithVersion> {
+        let tenant_for_audit = patch.version.tenant_id;
 
-        let version = self
-            .transaction(|conn| {
-                async move {
-                    let patch: PlanVersionTrialRowPatch = match patch.trial {
-                        None => PlanVersionTrialRowPatch {
-                            id: patch.plan_version_id,
-                            tenant_id: patch.tenant_id,
-                            trialing_plan_id: Some(None),
-                            trial_is_free: Some(false),
-                            trial_duration_days: Some(None),
-                        },
-                        Some(trial) => PlanVersionTrialRowPatch {
-                            id: patch.plan_version_id,
-                            tenant_id: patch.tenant_id,
-                            trialing_plan_id: Some(trial.trialing_plan_id),
-                            trial_is_free: Some(trial.trial_is_free),
-                            trial_duration_days: Some(Some(trial.duration_days as i32)),
-                        },
-                    };
+        self.transaction(|conn| {
+            let actor = &actor;
+            async move {
+                let patch_version: PlanVersionRowPatch = patch.version.into();
 
-                    let patched_version = patch
-                        .update_trial(conn)
-                        .await
-                        .map_err(Into::<Report<StoreError>>::into)?;
+                let patched_version = patch_version
+                    .update_draft(conn)
+                    .await
+                    .map_err(Into::<Report<StoreError>>::into)?;
 
-                    Ok(patched_version)
+                let patch_plan: PlanRowPatch = PlanPatch {
+                    id: patched_version.plan_id,
+                    tenant_id: patched_version.tenant_id,
+                    name: patch.name,
+                    description: patch.description,
+                    active_version_id: None,
+                    self_service_rank: None,
                 }
-                .scope_boxed()
-            })
-            .await?;
+                .into();
 
-        PlanRow::get_with_version(&mut conn, version.id, version.tenant_id)
-            .await
-            .map_err(Into::into)
-            .map(Into::into)
+                patch_plan
+                    .update(conn)
+                    .await
+                    .map_err(Into::<Report<StoreError>>::into)?;
+
+                let result: PlanWithVersion =
+                    PlanRow::get_with_version(conn, patched_version.id, patched_version.tenant_id)
+                        .await
+                        .map_err(Into::<Report<StoreError>>::into)
+                        .map(Into::into)?;
+
+                let activity = Activity::new(
+                    ActivityType::EntityUpdated,
+                    EntityType::Plan,
+                    patched_version.plan_id.as_uuid(),
+                );
+                self.internal
+                    .record_audit_tx(
+                        conn,
+                        tenant_for_audit,
+                        actor,
+                        AuditInput::Activity(activity),
+                    )
+                    .await?;
+
+                Ok(result)
+            }
+            .scope_boxed()
+        })
+        .await
     }
 
-    async fn archive_plan(&self, id: PlanId, auth_tenant_id: TenantId) -> StoreResult<()> {
+    async fn patch_trial(&self, actor: Actor, patch: TrialPatch) -> StoreResult<PlanWithVersion> {
+        self.transaction(|conn| {
+            let actor = &actor;
+            async move {
+                let trial_patch: PlanVersionTrialRowPatch = match patch.trial {
+                    None => PlanVersionTrialRowPatch {
+                        id: patch.plan_version_id,
+                        tenant_id: patch.tenant_id,
+                        trialing_plan_id: Some(None),
+                        trial_is_free: Some(false),
+                        trial_duration_days: Some(None),
+                    },
+                    Some(trial) => PlanVersionTrialRowPatch {
+                        id: patch.plan_version_id,
+                        tenant_id: patch.tenant_id,
+                        trialing_plan_id: Some(trial.trialing_plan_id),
+                        trial_is_free: Some(trial.trial_is_free),
+                        trial_duration_days: Some(Some(trial.duration_days as i32)),
+                    },
+                };
+
+                let patched_version = trial_patch
+                    .update_trial(conn)
+                    .await
+                    .map_err(Into::<Report<StoreError>>::into)?;
+
+                let result: PlanWithVersion =
+                    PlanRow::get_with_version(conn, patched_version.id, patched_version.tenant_id)
+                        .await
+                        .map_err(Into::<Report<StoreError>>::into)
+                        .map(Into::into)?;
+
+                let activity = Activity::new(
+                    ActivityType::EntityUpdated,
+                    EntityType::Plan,
+                    patched_version.plan_id.as_uuid(),
+                )
+                .with_metadata(serde_json::json!({
+                    "changes": [{ "field": "trial" }],
+                }));
+                self.internal
+                    .record_audit_tx(
+                        conn,
+                        patched_version.tenant_id,
+                        actor,
+                        AuditInput::Activity(activity),
+                    )
+                    .await?;
+
+                Ok(result)
+            }
+            .scope_boxed()
+        })
+        .await
+    }
+
+    async fn archive_plan(
+        &self,
+        actor: Actor,
+        id: PlanId,
+        auth_tenant_id: TenantId,
+    ) -> StoreResult<()> {
         let mut conn = self.get_conn().await?;
 
         // Fetch plan overview BEFORE archiving to get full data
@@ -1126,6 +1274,7 @@ impl PlansInterface for Store {
         };
 
         self.transaction_with(&mut conn, |conn| {
+            let actor = &actor;
             async move {
                 PlanRow::archive(conn, id, auth_tenant_id)
                     .await
@@ -1146,8 +1295,10 @@ impl PlansInterface for Store {
                         plan_overview.created_at,
                     );
                     self.internal
-                        .insert_outbox_events_tx(
+                        .record_outbox_batch_tx(
                             conn,
+                            auth_tenant_id,
+                            actor,
                             vec![crate::domain::outbox_event::OutboxEvent::plan_archived(
                                 plan_event,
                             )],
@@ -1221,9 +1372,9 @@ impl PlansInterface for Store {
     #[allow(clippy::too_many_arguments)]
     async fn replace_plan_version(
         &self,
+        typed_actor: Actor,
         plan_id: PlanId,
         tenant_id: TenantId,
-        actor: Uuid,
         name: String,
         description: Option<String>,
         version: crate::domain::PlanVersionNewInternal,
@@ -1274,6 +1425,7 @@ impl PlansInterface for Store {
 
         let res = self
             .transaction_with(&mut conn, |conn| {
+                let typed_actor = &typed_actor;
                 async move {
                     // Update plan name/description
                     PlanRowPatch {
@@ -1317,7 +1469,6 @@ impl PlansInterface for Store {
 
                     let new_version = PlanVersionNew {
                         plan_id,
-                        created_by: actor,
                         version: next_version,
                         tenant_id,
                         internal: version,
@@ -1336,7 +1487,6 @@ impl PlansInterface for Store {
                             conn,
                             p,
                             tenant_id,
-                            actor,
                             product_family.id,
                             &inserted_version.currency,
                             true,
@@ -1427,8 +1577,10 @@ impl PlansInterface for Store {
                             updated_plan.created_at,
                         );
                         self.internal
-                            .insert_outbox_events_tx(
+                            .record_outbox_batch_tx(
                                 conn,
+                                tenant_id,
+                                typed_actor,
                                 vec![crate::domain::outbox_event::OutboxEvent::plan_published(
                                     plan_event,
                                 )],
@@ -1459,19 +1611,15 @@ impl PlansInterface for Store {
             let _ = self
                 .eventbus
                 .publish(Event::plan_published_version(
-                    actor,
-                    res.id.as_uuid(),
-                    tenant_id.as_uuid(),
+                    typed_actor.clone(),
+                    res.id,
+                    tenant_id,
                 ))
                 .await;
         } else {
             let _ = self
                 .eventbus
-                .publish(Event::plan_created_draft(
-                    actor,
-                    res.id.as_uuid(),
-                    tenant_id.as_uuid(),
-                ))
+                .publish(Event::plan_created_draft(typed_actor, res.id, tenant_id))
                 .await;
         }
 

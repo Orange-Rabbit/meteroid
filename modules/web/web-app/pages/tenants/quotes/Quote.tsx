@@ -1,4 +1,4 @@
-import { useMutation } from '@connectrpc/connect-query'
+import { createConnectQueryKey, useMutation } from '@connectrpc/connect-query';
 import {
   Badge,
   Button,
@@ -25,7 +25,6 @@ import {
   Copy,
   CopyIcon,
   Download,
-  Edit,
   ExternalLink,
   FileText,
   Send,
@@ -35,12 +34,18 @@ import { Fragment, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { toast } from 'sonner'
 
+import { EntityActivityTimeline } from '@/features/activity/EntityActivityTimeline'
+import { ResolvedEntitlementsPanel } from '@/features/entitlements/resolved/ResolvedEntitlementsPanel'
 import { QuoteStatusBadge } from '@/features/quotes/QuoteStatusBadge'
 import { QuoteView } from '@/features/quotes/QuoteView'
 import { SendQuoteDialog } from '@/features/quotes/SendQuoteDialog'
-import { formatSubscriptionFee } from '@/features/subscriptions/utils/fees'
+import {
+  formatSubscriptionFee,
+  formatSubscriptionFeeBillingPeriod,
+} from '@/features/subscriptions/utils/fees'
 import { useBasePath } from '@/hooks/useBasePath'
 import { useQuery } from '@/lib/connectrpc'
+import { env } from '@/lib/env'
 import {
   DetailedQuote,
   QuoteComponent,
@@ -96,19 +101,30 @@ export const QuoteDetailView: React.FC<Props> = ({ quote }) => {
 
   const publishQuoteMutation = useMutation(publishQuote, {
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: [listQuotes.service.typeName] })
-      await queryClient.invalidateQueries({ queryKey: [getQuote.service.typeName] })
+      await queryClient.invalidateQueries({ queryKey: createConnectQueryKey({
+        schema: listQuotes.parent,
+        cardinality: undefined
+      }) })
+      await queryClient.invalidateQueries({ queryKey: createConnectQueryKey({
+        schema: getQuote.parent,
+        cardinality: undefined
+      }) })
     },
   })
 
   const convertQuoteToSubscriptionMutation = useMutation(convertQuoteToSubscription, {
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: [listQuotes.service.typeName] })
-      await queryClient.invalidateQueries({ queryKey: [getQuote.service.typeName] })
+      await queryClient.invalidateQueries({ queryKey: createConnectQueryKey({
+        schema: listQuotes.parent,
+        cardinality: undefined
+      }) })
+      await queryClient.invalidateQueries({ queryKey: createConnectQueryKey({
+        schema: getQuote.parent,
+        cardinality: undefined
+      }) })
     },
   })
 
-  const canEdit = quote.quote?.status === QuoteStatus.DRAFT
   const canPublish = quote.quote?.status === QuoteStatus.DRAFT
   const canSend =
     quote.quote?.status === QuoteStatus.DRAFT || quote.quote?.status === QuoteStatus.PENDING
@@ -127,15 +143,27 @@ export const QuoteDetailView: React.FC<Props> = ({ quote }) => {
 
   const sendQuoteMutation = useMutation(sendQuote, {
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: [listQuotes.service.typeName] })
-      await queryClient.invalidateQueries({ queryKey: [getQuote.service.typeName] })
+      await queryClient.invalidateQueries({ queryKey: createConnectQueryKey({
+        schema: listQuotes.parent,
+        cardinality: undefined
+      }) })
+      await queryClient.invalidateQueries({ queryKey: createConnectQueryKey({
+        schema: getQuote.parent,
+        cardinality: undefined
+      }) })
     },
   })
 
   const cancelQuoteMutation = useMutation(cancelQuote, {
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: [listQuotes.service.typeName] })
-      await queryClient.invalidateQueries({ queryKey: [getQuote.service.typeName] })
+      await queryClient.invalidateQueries({ queryKey: createConnectQueryKey({
+        schema: listQuotes.parent,
+        cardinality: undefined
+      }) })
+      await queryClient.invalidateQueries({ queryKey: createConnectQueryKey({
+        schema: getQuote.parent,
+        cardinality: undefined
+      }) })
     },
   })
 
@@ -256,14 +284,6 @@ export const QuoteDetailView: React.FC<Props> = ({ quote }) => {
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                {canEdit && (
-                  <DropdownMenuItem asChild>
-                    <Link to={`${basePath}/quotes/${quote.quote?.id}/edit`}>
-                      <Edit size="16" className="mr-2" />
-                      Edit Quote
-                    </Link>
-                  </DropdownMenuItem>
-                )}
                 {canPublish && (
                   <DropdownMenuItem onClick={handlePublishQuote}>
                     <FileText size="16" className="mr-2" />
@@ -494,24 +514,32 @@ export const QuoteDetailView: React.FC<Props> = ({ quote }) => {
             </>
           )}
 
-          <Separator className="-my-3" />
+          {quote.quote?.id && (
+            <>
+              <Separator className="-my-3" />
+              <Flex direction="column" className="gap-2 p-6">
+                <div className="text-[15px] font-medium">Activity</div>
+                <EntityActivityTimeline
+                  entityType="quote"
+                  entityId={quote.quote.id}
+                  emptyLabel="No activity recorded"
+                />
+              </Flex>
+            </>
+          )}
 
-          <Flex direction="column" className="gap-2 p-6">
-            <div className="text-[15px] font-medium">Timeline</div>
-            <div className="space-y-2">
-              {quote.activities?.map((activity, index) => (
-                <div key={activity.id || index} className="flex items-start gap-2">
-                  <div className="w-1.5 h-1.5 rounded-full bg-muted-foreground mt-1.5 flex-shrink-0"></div>
-                  <div>
-                    <div className="text-[13px] font-medium">{activity.description}</div>
-                    <div className="text-[11px] text-muted-foreground">
-                      {parseAndFormatDate(activity.createdAt)}
-                    </div>
-                  </div>
-                </div>
-              )) || <div className="text-[13px] text-muted-foreground">No activity recorded</div>}
-            </div>
-          </Flex>
+          {env.entitlementsEnabled && quote.quote?.id && (
+            <>
+              <Separator className="-my-3" />
+              <Flex direction="column" className="gap-2 p-6">
+                <div className="text-[15px] font-medium">Entitlements</div>
+                <ResolvedEntitlementsPanel
+                  entity={{ type: 'quote', id: quote.quote.id }}
+                  canPin={true}
+                />
+              </Flex>
+            </>
+          )}
         </div>
       </Flex>
 
@@ -618,11 +646,7 @@ const QuoteComponentCard: React.FC<{
 }> = ({ component, quote }) => {
   if (!quote.quote?.currency) return null
 
-  console.log('component', component)
-
   const formatted = formatSubscriptionFee(component.fee, quote.quote.currency)
-
-  console.log('formatted', formatted, component)
 
   return (
     <div className="py-2">
@@ -630,16 +654,16 @@ const QuoteComponentCard: React.FC<{
         <div className="flex-1">
           <div className="text-[13px] font-medium">{component.name}</div>
           <div className="text-[11px] text-muted-foreground mt-1">
-            {component.period}
+            {formatSubscriptionFeeBillingPeriod(component.period)}
             {component.isOverride && ' • Custom pricing'}
           </div>
         </div>
         <div className="text-right">
-          <div className="text-[13px] font-medium">
-            <div className="flex justify-between">
+          <div className="text-[13px] font-medium ">
+            <div className="flex justify-end">
               <span>{formatted.details}</span>
             </div>
-            <div className="flex justify-between">
+            <div className="flex justify-end">
               <span className="font-medium text-foreground">{formatted.amount}</span>
             </div>
           </div>

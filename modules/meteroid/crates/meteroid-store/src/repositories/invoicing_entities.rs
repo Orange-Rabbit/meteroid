@@ -1,4 +1,5 @@
 use crate::StoreResult;
+use crate::domain::entity_activity::{Activity, ActivityType, Actor, AuditInput, EntityType};
 use crate::domain::invoicing_entities::InvoicingEntity;
 use crate::domain::{
     InvoicingEntityNew, InvoicingEntityPatch, InvoicingEntityProviders,
@@ -16,6 +17,7 @@ use diesel_models::organizations::OrganizationRow;
 use diesel_models::tenants::TenantRow;
 use error_stack::Report;
 use meteroid_store_macros::with_conn_delegate;
+use scoped_futures::ScopedFutureExt;
 
 #[with_conn_delegate]
 #[async_trait::async_trait]
@@ -45,6 +47,7 @@ pub trait InvoicingEntityInterface {
     ) -> StoreResult<InvoicingEntity>;
     async fn patch_invoicing_entity(
         &self,
+        actor: Actor,
         invoicing_entity: InvoicingEntityPatch,
         tenant_id: TenantId,
     ) -> StoreResult<InvoicingEntity>;
@@ -145,12 +148,14 @@ impl InvoicingEntityInterface for Store {
 
     async fn patch_invoicing_entity(
         &self,
+        actor: Actor,
         invoicing_entity: InvoicingEntityPatch,
         tenant_id: TenantId,
     ) -> StoreResult<InvoicingEntity> {
         let mut conn = self.get_conn().await?;
 
         let mut row: InvoicingEntityRowPatch = invoicing_entity.into();
+        let entity_id = row.id;
 
         if row.country.is_some() {
             let is_in_use = InvoicingEntityRow::is_in_use(&mut conn, row.id, tenant_id)
@@ -167,10 +172,29 @@ impl InvoicingEntityInterface for Store {
             }
         }
 
-        let res = row
-            .patch_invoicing_entity(&mut conn, tenant_id)
-            .await
-            .map_err(Into::<Report<StoreError>>::into)?;
+        let res: InvoicingEntityRow = self
+            .transaction(|conn| {
+                let actor = &actor;
+                async move {
+                    let res = row
+                        .patch_invoicing_entity(conn, tenant_id)
+                        .await
+                        .map_err(Into::<Report<StoreError>>::into)?;
+
+                    let activity = Activity::new(
+                        ActivityType::EntityUpdated,
+                        EntityType::InvoicingEntity,
+                        entity_id.as_uuid(),
+                    );
+                    self.internal
+                        .record_audit_tx(conn, tenant_id, actor, AuditInput::Activity(activity))
+                        .await?;
+
+                    Ok(res)
+                }
+                .scope_boxed()
+            })
+            .await?;
 
         Ok(res.into())
     }

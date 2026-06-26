@@ -1,12 +1,12 @@
+use crate::domain::entity_activity::Actor;
 use crate::domain::{BankAccount, BankAccountPatch};
 use crate::errors::StoreError;
 use crate::store::Store;
 use crate::{StoreResult, domain};
-use common_domain::ids::{BankAccountId, BaseId, TenantId};
+use common_domain::ids::{BankAccountId, TenantId};
 use common_eventbus::Event;
 use diesel_models::bank_accounts::{BankAccountRow, BankAccountRowNew, BankAccountRowPatch};
 use error_stack::Report;
-use uuid::Uuid;
 
 #[async_trait::async_trait]
 pub trait BankAccountsInterface {
@@ -20,12 +20,16 @@ pub trait BankAccountsInterface {
 
     async fn delete_bank_account(&self, id: BankAccountId, tenant_id: TenantId) -> StoreResult<()>;
 
-    async fn insert_bank_account(&self, plan: domain::BankAccountNew) -> StoreResult<BankAccount>;
+    async fn insert_bank_account(
+        &self,
+        actor: Actor,
+        plan: domain::BankAccountNew,
+    ) -> StoreResult<BankAccount>;
 
     async fn patch_bank_account(
         &self,
         plan: BankAccountPatch,
-        actor: Uuid,
+        actor: Actor,
     ) -> StoreResult<BankAccount>;
 }
 
@@ -67,6 +71,7 @@ impl BankAccountsInterface for Store {
 
     async fn insert_bank_account(
         &self,
+        actor: Actor,
         entity: domain::BankAccountNew,
     ) -> StoreResult<domain::BankAccount> {
         let mut conn = self.get_conn().await?;
@@ -83,9 +88,9 @@ impl BankAccountsInterface for Store {
             let _ = self
                 .eventbus
                 .publish(Event::bank_account_created(
-                    insertable.created_by,
-                    insertable.id.as_uuid(),
-                    insertable.tenant_id.as_uuid(),
+                    actor,
+                    insertable.id,
+                    insertable.tenant_id,
                 ))
                 .await;
         }
@@ -96,7 +101,7 @@ impl BankAccountsInterface for Store {
     async fn patch_bank_account(
         &self,
         patch: BankAccountPatch,
-        actor: Uuid,
+        actor: Actor,
     ) -> StoreResult<BankAccount> {
         let mut conn = self.get_conn().await?;
 
@@ -113,8 +118,8 @@ impl BankAccountsInterface for Store {
                 .eventbus
                 .publish(Event::bank_account_edited(
                     actor,
-                    patch_row.id.as_uuid(),
-                    patch_row.tenant_id.as_uuid(),
+                    patch_row.id,
+                    patch_row.tenant_id,
                 ))
                 .await;
         }

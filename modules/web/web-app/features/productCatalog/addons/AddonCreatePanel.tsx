@@ -1,6 +1,4 @@
-import {
-  useMutation,
-} from '@connectrpc/connect-query'
+import { createConnectQueryKey, useMutation } from '@connectrpc/connect-query';
 import {
   Input,
   Label,
@@ -33,6 +31,8 @@ import { useEffect, useId, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import { CustomCreationFlow, IdentitySchema } from '@/features/addons/CustomCreationFlow'
+import { ProductEntitlementsCreationStep } from '@/features/entitlements/creation/ProductEntitlementsCreationStep'
+import { resolveEntitlementSpecs } from '@/features/entitlements/creation/resolveEntitlementSpecs'
 import {
   ADDON_FEE_TYPE_OPTIONS,
   ADDON_PROTO_FEE_TYPES,
@@ -51,9 +51,11 @@ import {
   createAddOn,
   listAddOns,
 } from '@/rpc/api/addons/v1/addons-AddOnsService_connectquery'
+import { createFeature } from '@/rpc/api/entitlements/v1/entitlements-EntitlementsService_connectquery'
 import { listProductFamilies } from '@/rpc/api/productfamilies/v1/productfamilies-ProductFamiliesService_connectquery'
 import { listTenantCurrencies } from '@/rpc/api/tenants/v1/tenants-TenantsService_connectquery'
 
+import type { PendingEntitlementSpec } from '@/features/entitlements/creation/types'
 import type { ComponentFeeType } from '@/features/pricing/conversions'
 
 type InstanceMode = 'single' | 'multiple' | 'unlimited'
@@ -98,24 +100,36 @@ export const AddonCreatePanel = () => {
   const createAddOnMutation = useMutation(createAddOn, {
     onSuccess: () => {
       queryClient.invalidateQueries({
-        queryKey: [listAddOns.service.typeName],
+        queryKey: createConnectQueryKey({
+          schema: listAddOns.parent,
+          cardinality: undefined
+        }),
       })
       navigate('..')
     },
   })
 
-  const handleAddExistingProduct = ({
+  const createFeatureMutation = useMutation(createFeature)
+
+  const handleAddExistingProduct = async ({
     productId,
     componentName,
     formData,
     feeType,
+    entitlements = [],
   }: {
     productId: string
     componentName: string
     formData: Record<string, unknown>
     feeType: ComponentFeeType
+    entitlements?: PendingEntitlementSpec[]
   }) => {
     if (!currency) return
+
+    const resolved = await resolveEntitlementSpecs(entitlements, req =>
+      createFeatureMutation.mutateAsync(req)
+    )
+
     const pricingType = toPricingTypeFromFeeType(
       feeType,
       feeType === 'usage' ? (formData.usageModel as string) : undefined
@@ -130,6 +144,7 @@ export const AddonCreatePanel = () => {
       selfServiceable,
       maxInstancesPerSubscription,
       productFamilyLocalId,
+      entitlements: resolved,
     })
   }
 
@@ -151,6 +166,7 @@ export const AddonCreatePanel = () => {
       selfServiceable,
       maxInstancesPerSubscription,
       productFamilyLocalId,
+      entitlements: [],
     })
   }
 
@@ -270,8 +286,19 @@ export const AddonCreatePanel = () => {
                 <ProductBrowser
                   currency={currency}
                   onAdd={handleAddExistingProduct}
-                  submitLabel="Create Add-on"
+                  submitLabel="Next →"
+                  finalSubmitLabel="Create Add-on"
                   feeTypes={ADDON_PROTO_FEE_TYPES}
+                  renderEntitlements={({ productId, productName, onBack, onConfirm }) => (
+                    <ProductEntitlementsCreationStep
+                      productId={productId}
+                      productName={productName}
+                      submitLabel="Create Add-on"
+                      onBack={onBack}
+                      onConfirm={onConfirm}
+                      isSubmitting={createAddOnMutation.isPending || createFeatureMutation.isPending}
+                    />
+                  )}
                 />
               </ScrollArea>
             </TabsContent>
@@ -296,6 +323,7 @@ export const AddonCreatePanel = () => {
                   onBack={step => setCustomStep(step)}
                   onSubmit={handleCreateNewProduct}
                   feeTypeOptions={ADDON_FEE_TYPE_OPTIONS}
+                  isSubmitting={createAddOnMutation.isPending}
                 />
               </ScrollArea>
             </TabsContent>

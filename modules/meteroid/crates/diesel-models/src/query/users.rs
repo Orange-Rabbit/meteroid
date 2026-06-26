@@ -46,6 +46,22 @@ impl UserRow {
             .into_db_result()
     }
 
+    pub async fn find_by_ids(conn: &mut PgConn, ids: &[Uuid]) -> DbResult<Vec<UserRow>> {
+        use crate::schema::user::dsl as u_dsl;
+        use diesel_async::RunQueryDsl;
+
+        if ids.is_empty() {
+            return Ok(vec![]);
+        }
+        u_dsl::user
+            .filter(u_dsl::id.eq_any(ids))
+            .select(UserRow::as_select())
+            .load(conn)
+            .await
+            .attach("Error while finding users by ids")
+            .into_db_result()
+    }
+
     pub async fn find_by_id_and_org_id(
         conn: &mut PgConn,
         id: Uuid,
@@ -149,6 +165,7 @@ impl UserRow {
         let query = u_dsl::user
             .inner_join(om_dsl::organization_member.on(u_dsl::id.eq(om_dsl::user_id)))
             .filter(om_dsl::organization_id.eq(organization_id))
+            .order_by((om_dsl::role.asc(), u_dsl::email.asc()))
             .select(UserWithRoleRow::as_select());
 
         log::debug!("{}", debug_query::<diesel::pg::Pg, _>(&query));

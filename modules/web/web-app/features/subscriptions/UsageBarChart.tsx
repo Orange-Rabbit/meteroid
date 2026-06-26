@@ -19,6 +19,8 @@ export interface UsageChartData {
 interface UsageBarChartProps {
   subscriptionId: string
   metricId: string
+  startDate?: string
+  endDate?: string
   /** When set, only data points matching these dimensions are shown (usage grouping filter). */
   groupByDimensions?: Record<string, string>
 }
@@ -27,11 +29,13 @@ interface UsageBarChartProps {
 export const UsageBarChart = ({
   subscriptionId,
   metricId,
+  startDate,
+  endDate,
   groupByDimensions,
 }: UsageBarChartProps) => {
   const usageQuery = useQuery(
     getSubscriptionComponentUsage,
-    { subscriptionId, metricId },
+    { subscriptionId, metricId, startDate, endDate },
     { enabled: Boolean(subscriptionId) && Boolean(metricId) }
   )
 
@@ -106,8 +110,8 @@ export const UsageBarChartDisplay = ({
 
     const allDays: string[] = []
     if (data.periodStart && data.periodEnd) {
-      const start = new Date(data.periodStart + 'T00:00:00')
-      const end = new Date(data.periodEnd + 'T00:00:00')
+      const start = new Date(data.periodStart)
+      const end = new Date(data.periodEnd)
       for (const d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
         allDays.push(d.toISOString().slice(0, 10))
       }

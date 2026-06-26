@@ -364,6 +364,7 @@ async fn test_metering_e2e() {
             product_family_local_id: "default".to_string(),
             plan_type: PlanType::Standard as i32,
             currency: "EUR".to_string(),
+            entitlements: vec![],
         }))
         .await
         .unwrap();
@@ -457,6 +458,7 @@ async fn test_metering_e2e() {
                         charge_automatically: None,
                         payment_methods_config: None,
                         skip_past_invoices: None,
+                        entitlements: vec![],
                     },
                 )
             },
@@ -528,6 +530,7 @@ async fn test_metering_e2e() {
             manual: false,
             invoicing_entity_id: INVOICING_ENTITY_ID,
             parent_invoice_id: None,
+            consolidated_into_invoice_id: None,
         })
         .await
         .unwrap();

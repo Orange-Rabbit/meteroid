@@ -5,8 +5,8 @@ use chrono::{NaiveDate, NaiveDateTime};
 
 use crate::customers::CustomerRow;
 use common_domain::ids::{
-    CustomerId, InvoiceId, PlanVersionId, PriceComponentId, PriceId, ProductId, QuoteActivityId,
-    QuoteId, QuotePriceComponentId, QuoteSignatureId, StoredDocumentId, SubscriptionId, TenantId,
+    CustomerId, InvoiceId, PlanVersionId, PriceComponentId, PriceId, ProductId, QuoteId,
+    QuotePriceComponentId, QuoteSignatureId, StoredDocumentId, SubscriptionId, TenantId,
 };
 use diesel::{AsChangeset, Identifiable, Insertable, Queryable, Selectable};
 
@@ -173,36 +173,6 @@ pub struct QuoteSignatureRowNew {
     pub verification_token: Option<String>,
 }
 
-#[derive(Debug, Identifiable, Queryable, Selectable)]
-#[diesel(table_name = crate::schema::quote_activity)]
-#[diesel(check_for_backend(diesel::pg::Pg))]
-pub struct QuoteActivityRow {
-    pub id: QuoteActivityId,
-    pub quote_id: QuoteId,
-    pub activity_type: String,
-    pub description: String,
-    pub actor_type: String,
-    pub actor_id: Option<String>,
-    pub actor_name: Option<String>,
-    pub created_at: NaiveDateTime,
-    pub ip_address: Option<String>,
-    pub user_agent: Option<String>,
-}
-
-#[derive(Insertable, Debug)]
-#[diesel(table_name = crate::schema::quote_activity)]
-pub struct QuoteActivityRowNew {
-    pub id: QuoteActivityId,
-    pub quote_id: QuoteId,
-    pub activity_type: String,
-    pub description: String,
-    pub actor_type: String,
-    pub actor_id: Option<String>,
-    pub actor_name: Option<String>,
-    pub ip_address: Option<String>,
-    pub user_agent: Option<String>,
-}
-
 #[derive(Queryable, Debug, Identifiable, Selectable)]
 #[diesel(table_name = crate::schema::quote_component)]
 #[diesel(check_for_backend(diesel::pg::Pg))]
@@ -216,6 +186,7 @@ pub struct QuoteComponentRow {
     pub legacy_fee: Option<serde_json::Value>,
     pub is_override: bool,
     pub price_id: Option<PriceId>,
+    pub example_usage_quantity: Option<rust_decimal::Decimal>,
 }
 
 #[derive(Insertable, Debug)]
@@ -230,4 +201,5 @@ pub struct QuoteComponentRowNew {
     pub legacy_fee: Option<serde_json::Value>,
     pub is_override: bool,
     pub price_id: Option<PriceId>,
+    pub example_usage_quantity: Option<rust_decimal::Decimal>,
 }

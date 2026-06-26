@@ -1,5 +1,6 @@
 use crate::StoreResult;
 use crate::domain::SubscriptionStatusEnum;
+use crate::domain::entity_activity::{Activity, ActivityType, Actor, AuditInput, EntityType};
 use crate::domain::enums::SubscriptionFeeBillingPeriod;
 use crate::domain::price_components::resolve_legacy_subscription_fee;
 use crate::domain::prices::{
@@ -20,15 +21,17 @@ use crate::domain::subscription_components::{
 };
 use crate::errors::StoreError;
 use crate::repositories::SubscriptionInterface;
+use crate::repositories::entity_activity::EntityActivityInterface;
 use crate::services::Services;
 use crate::services::subscriptions::proration::{calculate_proration, detect_change_direction};
 use crate::services::subscriptions::utils::calculate_mrr;
 use crate::store::PgConn;
 use crate::utils::periods::calculate_advance_period_range;
 use chrono::{Datelike, NaiveDate, NaiveTime};
-use common_domain::ids::{PlanVersionId, PriceComponentId, ProductId, SubscriptionId, TenantId};
+use common_domain::ids::{
+    BaseId, PlanVersionId, PriceComponentId, ProductId, SubscriptionId, TenantId,
+};
 use common_utils::decimals::ToSubunit;
-use diesel_async::scoped_futures::ScopedFutureExt;
 use diesel_models::plan_component_prices::PlanComponentPriceRow;
 use diesel_models::plan_version_add_ons::PlanVersionAddOnRow;
 use diesel_models::plans::PlanRow;
@@ -43,6 +46,7 @@ use diesel_models::subscription_components::{
 };
 use diesel_models::subscriptions::SubscriptionRow;
 use error_stack::Report;
+use scoped_futures::ScopedFutureExt;
 use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
@@ -143,6 +147,7 @@ async fn load_validated_plan_change_context(
 impl Services {
     pub(in crate::services) async fn schedule_plan_change(
         &self,
+        actor: Actor,
         subscription_id: SubscriptionId,
         tenant_id: TenantId,
         new_plan_version_id: PlanVersionId,
@@ -150,8 +155,9 @@ impl Services {
     ) -> StoreResult<ScheduledEvent> {
         self.store
             .transaction(|conn| {
+                let actor = &actor;
+                let component_params = &component_params;
                 async move {
-                    // Lock the subscription row to prevent concurrent plan change scheduling
                     SubscriptionRow::lock_subscription_for_update(conn, subscription_id).await?;
 
                     let ctx = load_validated_plan_change_context(
@@ -162,8 +168,8 @@ impl Services {
                         new_plan_version_id,
                     )
                     .await?;
+                    let customer_id = ctx.subscription_details.subscription.customer_id;
 
-                    // Cancel all pending lifecycle events (plan change, cancellation, pause, etc.)
                     ScheduledEventRow::cancel_pending_lifecycle_events(
                         conn,
                         subscription_id,
@@ -173,15 +179,13 @@ impl Services {
                     .await
                     .map_err(Into::<Report<StoreError>>::into)?;
 
-                    // Build component mappings
                     let component_mappings = build_component_mappings(
                         &ctx.subscription_details.price_components,
                         &ctx.target_components,
                         &ctx.products,
-                        &component_params,
+                        component_params,
                     )?;
 
-                    // Schedule at current_period_end
                     let effective_date = ctx
                         .subscription_details
                         .subscription
@@ -208,14 +212,31 @@ impl Services {
                                     component_mappings,
                                 },
                                 source: "api".to_string(),
+                                created_by_customer: actor.is_customer(),
                             }],
                         )
                         .await?;
 
-                    events
+                    let event = events
                         .into_iter()
                         .next()
-                        .ok_or_else(|| Report::new(StoreError::InsertError))
+                        .ok_or_else(|| Report::new(StoreError::InsertError))?;
+
+                    let activity = Activity::new(
+                        ActivityType::SubscriptionPlanChangeScheduled,
+                        EntityType::Subscription,
+                        subscription_id.as_uuid(),
+                    )
+                    .with_metadata(serde_json::json!({
+                        "new_plan_version_id": new_plan_version_id.to_string(),
+                        "effective_at": event.scheduled_time.to_string(),
+                    }))
+                    .agg_customer(customer_id);
+                    self.store
+                        .record_tx(conn, tenant_id, actor, AuditInput::Activity(activity))
+                        .await?;
+
+                    Ok(event)
                 }
                 .scope_boxed()
             })
@@ -289,9 +310,19 @@ impl Services {
                 ))));
             }
 
+            // Plan changes never re-charge the new plan's one-time (setup) fees:
+            // those are signup-only, billed at subscription creation. Only recurring
+            // components prorate on an immediate change.
+            let added_recurring: Vec<AddedComponent> = preview
+                .added
+                .iter()
+                .filter(|a| !matches!(a.fee, SubscriptionFee::OneTime { .. }))
+                .cloned()
+                .collect();
+
             let result = calculate_proration(
                 &preview.matched,
-                &preview.added,
+                &added_recurring,
                 &preview.removed,
                 period_start,
                 period_end,
@@ -316,6 +347,17 @@ impl Services {
                     .map(|l| l.amount_cents)
                     .sum(),
                 net_amount_cents: result.net_amount_cents,
+                // What would actually be credited (post-netting): an override's credit
+                // is netted into its charge, so an upgrade contributes nothing here.
+                net_credit_cents: crate::services::subscriptions::proration::net_override_lines(
+                    &result.lines,
+                )
+                .iter()
+                .filter(|l| l.amount_cents < 0)
+                .map(|l| l.amount_cents)
+                .sum(),
+                // Plan changes don't introduce new arrears components, so no deferred amount.
+                arrears_charge_cents: 0,
                 proration_factor: result.proration_factor,
                 days_remaining,
                 days_in_period,
@@ -333,11 +375,13 @@ impl Services {
 
     pub(in crate::services) async fn cancel_plan_change(
         &self,
+        actor: Actor,
         subscription_id: SubscriptionId,
         tenant_id: TenantId,
     ) -> StoreResult<()> {
         self.store
             .transaction(|conn| {
+                let actor = &actor;
                 async move {
                     SubscriptionRow::lock_subscription_for_update(conn, subscription_id).await?;
 
@@ -354,17 +398,30 @@ impl Services {
                             == diesel_models::enums::ScheduledEventTypeEnum::ApplyPlanChange
                     });
 
-                    match plan_change_event {
-                        Some(event) => {
-                            ScheduledEventRow::cancel_event(conn, &event.id, "Cancelled by user")
-                                .await
-                                .map_err(Into::<Report<StoreError>>::into)?;
-                            Ok(())
-                        }
-                        None => Err(Report::new(StoreError::ValueNotFound(
+                    let event = plan_change_event.ok_or_else(|| {
+                        Report::new(StoreError::ValueNotFound(
                             "No pending plan change found for this subscription".to_string(),
-                        ))),
-                    }
+                        ))
+                    })?;
+
+                    ScheduledEventRow::cancel_event(conn, &event.id, "Cancelled by user")
+                        .await
+                        .map_err(Into::<Report<StoreError>>::into)?;
+
+                    let customer_id =
+                        SubscriptionRow::get_customer_id(conn, &tenant_id, subscription_id)
+                            .await
+                            .map_err(Into::<Report<StoreError>>::into)?;
+
+                    let activity = Activity::new(
+                        ActivityType::SubscriptionPlanChangeCancelled,
+                        EntityType::Subscription,
+                        subscription_id.as_uuid(),
+                    )
+                    .agg_customer(customer_id);
+                    self.store
+                        .record_tx(conn, tenant_id, actor, AuditInput::Activity(activity))
+                        .await
                 }
                 .scope_boxed()
             })
@@ -373,52 +430,100 @@ impl Services {
 
     pub(in crate::services) async fn cancel_scheduled_event(
         &self,
+        actor: Actor,
         event_id: common_domain::ids::ScheduledEventId,
         subscription_id: SubscriptionId,
         tenant_id: TenantId,
     ) -> StoreResult<()> {
-        let mut conn = self.store.get_conn().await?;
+        self.store
+            .transaction(|conn| {
+                let actor = &actor;
+                async move {
+                    let event = ScheduledEventRow::get_by_id(conn, event_id, &tenant_id)
+                        .await
+                        .map_err(Into::<Report<StoreError>>::into)?;
 
-        let event = ScheduledEventRow::get_by_id(&mut conn, event_id, &tenant_id)
+                    if event.subscription_id != subscription_id {
+                        return Err(Report::new(StoreError::InvalidArgument(
+                            "Event does not belong to the specified subscription".to_string(),
+                        )));
+                    }
+
+                    if !matches!(
+                        event.status,
+                        diesel_models::enums::ScheduledEventStatus::Pending
+                    ) {
+                        return Err(Report::new(StoreError::InvalidArgument(
+                            "Only pending events can be cancelled".to_string(),
+                        )));
+                    }
+
+                    if !matches!(
+                        event.event_type,
+                        diesel_models::enums::ScheduledEventTypeEnum::ApplyPlanChange
+                            | diesel_models::enums::ScheduledEventTypeEnum::CancelSubscription
+                            | diesel_models::enums::ScheduledEventTypeEnum::PauseSubscription
+                            | diesel_models::enums::ScheduledEventTypeEnum::ApplyAmendment
+                    ) {
+                        return Err(Report::new(StoreError::InvalidArgument(
+                            "This event type cannot be cancelled".to_string(),
+                        )));
+                    }
+
+                    // Customers may only cancel events they themselves scheduled.
+                    // Admin/User/ApiToken/System actors may cancel anything.
+                    if actor.is_customer() && !event.created_by_customer {
+                        return Err(Report::new(StoreError::InvalidArgument(
+                            "This scheduled change can only be modified by your account manager"
+                                .to_string(),
+                        )));
+                    }
+
+                    // PauseSubscription has no dedicated "undo" variant; skip the audit row.
+                    let activity_type = match event.event_type {
+                        diesel_models::enums::ScheduledEventTypeEnum::ApplyPlanChange => {
+                            Some(ActivityType::SubscriptionPlanChangeCancelled)
+                        }
+                        diesel_models::enums::ScheduledEventTypeEnum::CancelSubscription => {
+                            Some(ActivityType::SubscriptionCancellationUndone)
+                        }
+                        diesel_models::enums::ScheduledEventTypeEnum::ApplyAmendment => {
+                            Some(ActivityType::SubscriptionAmendmentCancelled)
+                        }
+                        _ => None,
+                    };
+
+                    ScheduledEventRow::cancel_event(conn, &event_id, "Cancelled by user")
+                        .await
+                        .map_err(Into::<Report<StoreError>>::into)?;
+
+                    if let Some(activity_type) = activity_type {
+                        let customer_id =
+                            SubscriptionRow::get_customer_id(conn, &tenant_id, subscription_id)
+                                .await
+                                .map_err(Into::<Report<StoreError>>::into)?;
+
+                        let activity = Activity::new(
+                            activity_type,
+                            EntityType::Subscription,
+                            subscription_id.as_uuid(),
+                        )
+                        .agg_customer(customer_id);
+                        self.store
+                            .record_tx(conn, tenant_id, actor, AuditInput::Activity(activity))
+                            .await?;
+                    }
+
+                    Ok(())
+                }
+                .scope_boxed()
+            })
             .await
-            .map_err(Into::<Report<StoreError>>::into)?;
-
-        if event.subscription_id != subscription_id {
-            return Err(Report::new(StoreError::InvalidArgument(
-                "Event does not belong to the specified subscription".to_string(),
-            )));
-        }
-
-        if !matches!(
-            event.status,
-            diesel_models::enums::ScheduledEventStatus::Pending
-        ) {
-            return Err(Report::new(StoreError::InvalidArgument(
-                "Only pending events can be cancelled".to_string(),
-            )));
-        }
-
-        // Only user-initiated lifecycle events can be cancelled via API
-        if !matches!(
-            event.event_type,
-            diesel_models::enums::ScheduledEventTypeEnum::ApplyPlanChange
-                | diesel_models::enums::ScheduledEventTypeEnum::CancelSubscription
-                | diesel_models::enums::ScheduledEventTypeEnum::PauseSubscription
-        ) {
-            return Err(Report::new(StoreError::InvalidArgument(
-                "This event type cannot be cancelled".to_string(),
-            )));
-        }
-
-        ScheduledEventRow::cancel_event(&mut conn, &event_id, "Cancelled by user")
-            .await
-            .map_err(Into::<Report<StoreError>>::into)?;
-
-        Ok(())
     }
 
     pub(in crate::services) async fn apply_plan_change_immediate(
         &self,
+        typed_actor: Actor,
         subscription_id: SubscriptionId,
         tenant_id: TenantId,
         new_plan_version_id: PlanVersionId,
@@ -426,6 +531,7 @@ impl Services {
     ) -> StoreResult<ImmediatePlanChangeResult> {
         let today = chrono::Utc::now().naive_utc().date();
         self.apply_plan_change_immediate_at(
+            typed_actor,
             subscription_id,
             tenant_id,
             new_plan_version_id,
@@ -437,6 +543,7 @@ impl Services {
 
     pub(crate) async fn apply_plan_change_immediate_at(
         &self,
+        actor: Actor,
         subscription_id: SubscriptionId,
         tenant_id: TenantId,
         new_plan_version_id: PlanVersionId,
@@ -445,6 +552,8 @@ impl Services {
     ) -> StoreResult<ImmediatePlanChangeResult> {
         self.store
             .transaction(|conn| {
+                let actor = &actor;
+                let component_params = &component_params;
                 async move {
                     let prepared = self
                         .prepare_plan_change_tx(
@@ -452,10 +561,11 @@ impl Services {
                             subscription_id,
                             tenant_id,
                             new_plan_version_id,
-                            &component_params,
+                            component_params,
                             change_date,
                         )
                         .await?;
+                    let customer_id = prepared.subscription_details.customer.id;
 
                     let is_free_trial = prepared.is_free_trial();
 
@@ -472,8 +582,15 @@ impl Services {
                             )
                             .await?;
                         if let Some(inv) = &invoice {
-                            self.finalize_invoice_tx(conn, inv.id, tenant_id, false, &None)
-                                .await?;
+                            self.finalize_invoice_tx(
+                                conn,
+                                &Actor::System,
+                                inv.id,
+                                tenant_id,
+                                false,
+                                &None,
+                            )
+                            .await?;
                         }
                         invoice.map(|inv| inv.id)
                     } else {
@@ -506,6 +623,20 @@ impl Services {
                     } else {
                         None
                     };
+
+                    let activity = Activity::new(
+                        ActivityType::SubscriptionPlanChanged,
+                        EntityType::Subscription,
+                        subscription_id.as_uuid(),
+                    )
+                    .with_metadata(serde_json::json!({
+                        "new_plan_version_id": new_plan_version_id.to_string(),
+                        "change_date": change_date.to_string(),
+                    }))
+                    .agg_customer(customer_id);
+                    self.store
+                        .record_tx(conn, tenant_id, actor, AuditInput::Activity(activity))
+                        .await?;
 
                     Ok(ImmediatePlanChangeResult {
                         adjustment_invoice_id,
@@ -620,9 +751,19 @@ impl Services {
             ))));
         }
 
+        // Plan changes never re-charge the new plan's one-time (setup) fees:
+        // those are signup-only, billed at subscription creation. Only recurring
+        // components prorate on an immediate change.
+        let added_recurring: Vec<AddedComponent> = preview
+            .added
+            .iter()
+            .filter(|a| !matches!(a.fee, SubscriptionFee::OneTime { .. }))
+            .cloned()
+            .collect();
+
         let proration = calculate_proration(
             &preview.matched,
-            &preview.added,
+            &added_recurring,
             &preview.removed,
             period_start,
             period_end,
@@ -995,6 +1136,8 @@ impl PreparedPlanChange {
                     price_id: Some(*price_id),
                     effective_from: change_date,
                     effective_to: None,
+                    lineage_id: None,
+                    added_by_amendment: false,
                 }),
                 ComponentMapping::Added {
                     target_component_id,
@@ -1014,6 +1157,8 @@ impl PreparedPlanChange {
                     price_id: *price_id,
                     effective_from: change_date,
                     effective_to: None,
+                    lineage_id: None,
+                    added_by_amendment: false,
                 }),
                 ComponentMapping::Removed { .. } => None,
             })
@@ -1052,6 +1197,7 @@ impl PreparedPlanChange {
             metrics: self.subscription_details.metrics.clone(),
             checkout_url: None,
             pending_events: Vec::new(),
+            entitlements: Vec::new(),
         })
     }
 }
@@ -1438,10 +1584,15 @@ fn build_plan_change_preview(
 
         let (period, fee, _) = resolve_target_fee(target, products, explicit_params, None)?;
 
+        let instance_quantity = crate::services::subscriptions::proration::fee_instance_count(&fee);
         added.push(AddedComponent {
             name: target.name.clone(),
             fee,
             period,
+            net_key: None,
+            billed_component_id: None,
+            billed_add_on_id: None,
+            instance_quantity: Some(instance_quantity),
         });
     }
 
@@ -1451,6 +1602,7 @@ fn build_plan_change_preview(
                 name: current.name.clone(),
                 current_fee: current.fee.clone(),
                 current_period: current.period,
+                net_key: None,
             });
         }
     }

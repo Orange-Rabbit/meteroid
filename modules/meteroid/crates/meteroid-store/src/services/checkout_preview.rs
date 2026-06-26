@@ -197,7 +197,6 @@ impl Services {
             plan_version_id: session.plan_version_id,
             version,
             created_at: Utc::now().naive_utc(),
-            created_by: session.created_by,
             net_terms,
             invoice_memo: session.invoice_memo.clone(),
             invoice_threshold: session.invoice_threshold,
@@ -269,6 +268,7 @@ impl Services {
             checkout_url: None,
             trial_config,
             pending_events: Vec::new(),
+            entitlements: Vec::new(),
         })
     }
 
@@ -290,6 +290,8 @@ impl Services {
             price_id: resolved.price_id,
             effective_from: chrono::Utc::now().naive_utc().date(),
             effective_to: None,
+            lineage_id: None,
+            added_by_amendment: false,
         })
     }
 
@@ -364,6 +366,8 @@ impl Services {
                     price_id: resolved.price_id,
                     effective_from: chrono::Utc::now().naive_utc().date(),
                     effective_to: None,
+                    lineage_id: None,
+                    added_by_amendment: false,
                 });
                 continue;
             }
@@ -402,6 +406,8 @@ impl Services {
             price_id: resolved.existing_price_id(),
             effective_from: chrono::Utc::now().naive_utc().date(),
             effective_to: None,
+            lineage_id: None,
+            added_by_amendment: false,
         }
     }
 
@@ -591,6 +597,10 @@ impl Services {
                 price_id: resolved.price_id,
                 created_at: chrono::Utc::now().naive_utc(),
                 quantity: create_ao.quantity,
+                effective_from: chrono::Utc::now().naive_utc().date(),
+                effective_to: None,
+                lineage_id: None,
+                added_by_amendment: false,
             });
         }
 

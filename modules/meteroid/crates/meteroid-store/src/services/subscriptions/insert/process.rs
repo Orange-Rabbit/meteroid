@@ -3,6 +3,7 @@ use super::payment_method::PaymentSetupResult;
 use crate::constants::{Currencies, Currency};
 use crate::domain::checkout_sessions::{CheckoutType, CreateCheckoutSession};
 use crate::domain::coupons::Coupon;
+use crate::domain::entity_activity::Actor;
 use crate::domain::enums::SubscriptionEventType;
 use crate::domain::scheduled_events::ScheduledEventNew;
 use crate::domain::slot_transactions::{SlotTransaction, SlotTransactionNewInternal};
@@ -29,7 +30,6 @@ use crate::{StoreResult, services::Services};
 use chrono::{Datelike, NaiveDate};
 use common_domain::ids::{BaseId, QuoteId, SubscriptionId, TenantId};
 use common_eventbus::{Event, EventBus};
-use diesel_async::scoped_futures::ScopedFutureExt;
 use diesel_models::applied_coupons::AppliedCouponRowNew;
 use diesel_models::checkout_sessions::{CheckoutSessionRow, CheckoutSessionRowNew};
 use diesel_models::enums::CycleActionEnum;
@@ -44,6 +44,7 @@ use diesel_models::subscription_events::SubscriptionEventRow;
 use diesel_models::subscriptions::{SubscriptionRow, SubscriptionRowNew};
 use error_stack::{Report, ResultExt};
 use futures::TryFutureExt;
+use scoped_futures::ScopedFutureExt;
 use secrecy::SecretString;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -69,6 +70,7 @@ pub struct ProcessedSubscription {
     skip_checkout_session: bool,
     /// When true, skip billing for this subscription (migration mode).
     skip_past_invoices: bool,
+    entitlements: Vec<crate::domain::entitlements::EntitlementSpec>,
 }
 
 pub struct DetailedSubscription {
@@ -81,6 +83,7 @@ pub struct DetailedSubscription {
     pub slot_transactions: Vec<SlotTransactionNewInternal>,
     pub pending_materializations: Vec<PendingMaterialization>,
     pub pending_addon_materializations: Vec<PendingMaterialization>,
+    pub entitlements: Vec<crate::domain::entitlements::EntitlementSpec>,
 }
 
 impl Services {
@@ -97,6 +100,7 @@ impl Services {
                 price_components,
                 add_ons,
                 coupons,
+                entitlements,
             } = params;
 
             let customer = context
@@ -130,7 +134,7 @@ impl Services {
             let (components, pending_materializations) =
                 self.process_components(price_components, subscription, context, resolved, plan)?;
             let (subscription_add_ons, pending_addon_materializations) =
-                self.process_add_ons(add_ons, context, plan)?;
+                self.process_add_ons(add_ons, subscription, context, plan)?;
 
             let slot_transactions = process_slot_transactions(
                 &components,
@@ -166,6 +170,7 @@ impl Services {
                 slot_transactions,
                 pending_materializations,
                 pending_addon_materializations,
+                entitlements: entitlements.clone(),
             });
         }
 
@@ -223,6 +228,7 @@ impl Services {
             slot_transactions,
             pending_materializations: vec![], // Quotes have pre-resolved products/prices
             pending_addon_materializations: vec![], // Quotes have pre-resolved add-on prices
+            entitlements: params.entitlements.clone(),
         })
     }
 
@@ -614,6 +620,7 @@ impl Services {
             pending_addon_materializations: sub.pending_addon_materializations.clone(),
             skip_checkout_session: sub.subscription.skip_checkout_session,
             skip_past_invoices: sub.subscription.skip_past_invoices,
+            entitlements: sub.entitlements.clone(),
         })
     }
 
@@ -650,6 +657,7 @@ impl Services {
     fn process_add_ons(
         &self,
         add_ons: &Option<CreateSubscriptionAddOns>,
+        subscription: &SubscriptionNew,
         context: &SubscriptionCreationContext,
         plan: &crate::domain::PlanForSubscription,
     ) -> Result<
@@ -659,6 +667,10 @@ impl Services {
         ),
         StoreErrorReport,
     > {
+        let effective_from = subscription
+            .billing_start_date
+            .unwrap_or(subscription.start_date);
+
         process_create_subscription_add_ons(
             add_ons,
             &context.all_add_ons,
@@ -666,6 +678,7 @@ impl Services {
             &context.addon_prices_by_id,
             plan.product_family_id,
             &plan.currency,
+            effective_from,
         )
     }
 
@@ -814,7 +827,6 @@ impl Services {
                                 conn,
                                 &internal,
                                 tenant_id,
-                                proc.subscription.created_by,
                                 mat.product_family_id,
                                 &mat.currency,
                                 false,
@@ -850,7 +862,6 @@ impl Services {
                                 conn,
                                 &internal,
                                 tenant_id,
-                                proc.subscription.created_by,
                                 mat.product_family_id,
                                 &mat.currency,
                                 false,
@@ -914,6 +925,18 @@ impl Services {
                             .await
                             .map(|v| v.into_iter().map(Into::into).collect())?;
 
+                    for (proc, created) in processed.iter().zip(inserted.iter()) {
+                        if !proc.entitlements.is_empty() {
+                            crate::repositories::entitlements::insert_entitlement_specs(
+                                conn,
+                                proc.entitlements.clone(),
+                                common_domain::ids::EntitlementEntityId::Subscription(created.id),
+                                tenant_id,
+                            )
+                            .await?;
+                        }
+                    }
+
                     SubscriptionComponentRow::insert_subscription_component_batch(conn, components)
                         .map_err(Into::<StoreErrorReport>::into)
                         .await?;
@@ -953,8 +976,13 @@ impl Services {
                             .await?;
                     }
 
-                    self.insert_created_outbox_events_tx(conn, &inserted, tenant_id)
-                        .await?;
+                    self.insert_created_outbox_events_tx(
+                        conn,
+                        &Actor::System,
+                        &inserted,
+                        tenant_id,
+                    )
+                    .await?;
 
                     // For pending_checkout subscriptions, create checkout sessions inside the transaction
                     // so the FK constraint on subscription_id is satisfied.
@@ -976,7 +1004,6 @@ impl Services {
                                 tenant_id,
                                 customer_id: sub.customer_id,
                                 plan_version_id: sub.plan_version_id,
-                                created_by: sub.created_by,
                                 billing_start_date: sub.billing_start_date,
                                 billing_day_anchor: Some(sub.billing_day_anchor),
                                 net_terms: Some(sub.net_terms),
@@ -1084,11 +1111,12 @@ impl Services {
 
     pub async fn handle_post_insertion(
         &self,
+        actor: &Actor,
         event_bus: Arc<dyn EventBus<Event>>,
         inserted: &[CreatedSubscription],
     ) -> StoreResult<()> {
         // Publish events
-        self.publish_subscription_events(event_bus, inserted)
+        self.publish_subscription_events(actor, event_bus, inserted)
             .await?;
 
         Ok(())
@@ -1096,14 +1124,15 @@ impl Services {
 
     async fn publish_subscription_events(
         &self,
+        actor: &Actor,
         event_bus: Arc<dyn EventBus<Event>>,
         subscriptions: &[CreatedSubscription],
     ) -> StoreResult<()> {
         let results = futures::future::join_all(subscriptions.iter().map(|sub| {
             event_bus.publish(Event::subscription_created(
-                sub.created_by,
-                sub.id.as_uuid(),
-                sub.tenant_id.as_uuid(),
+                actor.clone(),
+                sub.id,
+                sub.tenant_id,
             ))
         }))
         .await;

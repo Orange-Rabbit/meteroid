@@ -1,4 +1,5 @@
-import { useMutation } from '@connectrpc/connect-query'
+import { timestampDate } from '@bufbuild/protobuf/wkt';
+import { createConnectQueryKey, useMutation } from '@connectrpc/connect-query';
 import {
   Button,
   Card,
@@ -28,6 +29,7 @@ import { ReactNode, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
 
+import { EntityActivityTimeline } from '@/features/activity/EntityActivityTimeline'
 import { BillableMetricStatusBadge } from '@/features/productCatalog/metrics/BillableMetricStatusBadge'
 import { useBasePath } from '@/hooks/useBasePath'
 import { useQuery } from '@/lib/connectrpc'
@@ -108,8 +110,14 @@ export const ProductMetricDetail = () => {
 
   const archiveMutation = useMutation(archiveBillableMetric, {
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: [listBillableMetrics.service.typeName] })
-      await queryClient.invalidateQueries({ queryKey: [getBillableMetric.service.typeName] })
+      await queryClient.invalidateQueries({ queryKey: createConnectQueryKey({
+        schema: listBillableMetrics.parent,
+        cardinality: undefined
+      }) })
+      await queryClient.invalidateQueries({ queryKey: createConnectQueryKey({
+        schema: getBillableMetric.parent,
+        cardinality: undefined
+      }) })
       toast.success('Metric archived successfully')
     },
     onError: () => {
@@ -119,8 +127,14 @@ export const ProductMetricDetail = () => {
 
   const unarchiveMutation = useMutation(unarchiveBillableMetric, {
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: [listBillableMetrics.service.typeName] })
-      await queryClient.invalidateQueries({ queryKey: [getBillableMetric.service.typeName] })
+      await queryClient.invalidateQueries({ queryKey: createConnectQueryKey({
+        schema: listBillableMetrics.parent,
+        cardinality: undefined
+      }) })
+      await queryClient.invalidateQueries({ queryKey: createConnectQueryKey({
+        schema: getBillableMetric.parent,
+        cardinality: undefined
+      }) })
       toast.success('Metric unarchived successfully')
     },
     onError: () => {
@@ -277,6 +291,20 @@ export const ProductMetricDetail = () => {
             </div>
           </div>
         </div>
+
+        {/* Activity */}
+        <div className="bg-card rounded-lg shadow-sm mb-6">
+          <div className="p-4 border-b border-border">
+            <h3 className="text-md font-medium text-foreground">Activity</h3>
+          </div>
+          <div className="p-6">
+            <EntityActivityTimeline
+              entityType="billable_metric"
+              entityId={data.id}
+              emptyLabel="No activity yet for this metric"
+            />
+          </div>
+        </div>
       </div>
 
       {/* Sidebar */}
@@ -402,9 +430,17 @@ export const ProductMetricDetail = () => {
         )}
 
         <DetailSection title="Timeline">
-          <DetailRow label="Created At" value={data.createdAt?.toDate().toLocaleString()} />
+          <DetailRow
+            label="Created At"
+            value={
+              data.createdAt && timestampDate(data.createdAt).toLocaleString()
+            }
+          />
           {data.archivedAt && (
-            <DetailRow label="Archived At" value={data.archivedAt?.toDate().toLocaleString()} />
+            <DetailRow
+              label="Archived At"
+              value={timestampDate(data.archivedAt).toLocaleString()}
+            />
           )}
         </DetailSection>
 

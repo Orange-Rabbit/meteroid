@@ -2,7 +2,7 @@ use crate::StoreResult;
 use crate::domain::enums::SubscriptionFeeBillingPeriod;
 use crate::domain::prices::{Price, fee_type_billing_period, resolve_subscription_fee};
 use crate::domain::products::Product;
-use crate::domain::subscriptions::{PaymentMethodsConfig, PendingScheduledEvent};
+use crate::domain::subscriptions::{AmendmentSummary, PaymentMethodsConfig, PendingScheduledEvent};
 use crate::domain::{
     BillableMetric, ConnectorProviderEnum, Customer, InvoicingEntity, PaginatedVec,
     PaginationRequest, Schedule, Subscription, SubscriptionComponent, SubscriptionComponentNew,
@@ -10,7 +10,8 @@ use crate::domain::{
 };
 use chrono::NaiveDate;
 use common_domain::ids::{
-    ConnectorId, CustomerId, PlanId, PriceId, ProductId, SubscriptionId, TenantId,
+    ConnectorId, CustomerId, EntitlementEntityId, PlanId, PriceId, ProductId, SubscriptionId,
+    TenantId,
 };
 use std::collections::HashMap;
 
@@ -20,9 +21,11 @@ use crate::store::Store;
 use error_stack::{Report, bail};
 use itertools::Itertools;
 
+use crate::domain::entitlements::Entitlement;
 use crate::domain::subscription_add_ons::SubscriptionAddOn;
 use diesel_models::applied_coupons::AppliedCouponDetailedRow;
 use diesel_models::billable_metrics::BillableMetricRow;
+use diesel_models::entitlements::EntitlementRow;
 use diesel_models::prices::PriceRow;
 use diesel_models::products::ProductRow;
 use diesel_models::schedules::ScheduleRow;
@@ -189,6 +192,7 @@ impl SubscriptionInterface for Store {
             checkout_url: None,
             trial_config: None,
             pending_events: vec![],
+            entitlements: vec![],
         })
     }
 
@@ -235,10 +239,13 @@ impl SubscriptionInterface for Store {
             .map(std::convert::TryInto::try_into)
             .collect::<Result<Vec<_>, Report<_>>>()?;
 
-        let subscription_add_on_rows =
-            SubscriptionAddOnRow::list_by_subscription_id(conn, &tenant_id, &subscription.id)
-                .await
-                .map_err(Into::<Report<StoreError>>::into)?;
+        let subscription_add_on_rows = SubscriptionAddOnRow::list_by_subscription_id_active(
+            conn,
+            &tenant_id,
+            &subscription.id,
+        )
+        .await
+        .map_err(Into::<Report<StoreError>>::into)?;
 
         let (addon_rows_with_price, addon_rows_without_price): (Vec<_>, Vec<_>) =
             subscription_add_on_rows
@@ -287,6 +294,8 @@ impl SubscriptionInterface for Store {
                         price_id: row.price_id,
                         effective_from: row.effective_from,
                         effective_to: row.effective_to,
+                        lineage_id: row.lineage_id,
+                        added_by_amendment: row.added_by_amendment,
                     }
                 } else {
                     row.try_into()?
@@ -315,6 +324,10 @@ impl SubscriptionInterface for Store {
                         product_id: row.product_id,
                         price_id: row.price_id,
                         quantity: row.quantity,
+                        effective_from: row.effective_from,
+                        effective_to: row.effective_to,
+                        lineage_id: row.lineage_id,
+                        added_by_amendment: row.added_by_amendment,
                     }
                 } else {
                     row.try_into()?
@@ -455,6 +468,8 @@ impl SubscriptionInterface for Store {
                     new_plan_name: None,
                     new_plan_version_id: None,
                     cancel_reason: None,
+                    customer_initiated: event.created_by_customer,
+                    amendment_summary: None,
                 };
 
                 match &event.event_data {
@@ -472,6 +487,45 @@ impl SubscriptionInterface for Store {
                     ScheduledEventData::CancelSubscription { reason } => {
                         pending.cancel_reason = reason.clone();
                     }
+                    ScheduledEventData::ApplyAmendment {
+                        component_close,
+                        component_insert,
+                        addon_close,
+                        addon_insert,
+                    } => {
+                        let added_component_names =
+                            component_insert.iter().map(|c| c.name.clone()).collect();
+                        let added_add_on_names =
+                            addon_insert.iter().map(|a| a.name.clone()).collect();
+
+                        // Resolve removed names from the subscription's currently-loaded
+                        // components/add-ons (in scope here), avoiding extra DB queries.
+                        let removed_component_names = component_close
+                            .iter()
+                            .filter_map(|id| {
+                                subscription_components
+                                    .iter()
+                                    .find(|c| &c.id == id)
+                                    .map(|c| c.name.clone())
+                            })
+                            .collect();
+                        let removed_add_on_names = addon_close
+                            .iter()
+                            .filter_map(|id| {
+                                subscription_add_ons
+                                    .iter()
+                                    .find(|a| &a.id == id)
+                                    .map(|a| a.name.clone())
+                            })
+                            .collect();
+
+                        pending.amendment_summary = Some(AmendmentSummary {
+                            added_component_names,
+                            removed_component_names,
+                            added_add_on_names,
+                            removed_add_on_names,
+                        });
+                    }
                     _ => {}
                 }
 
@@ -479,6 +533,19 @@ impl SubscriptionInterface for Store {
             }
             events
         };
+
+        let entitlement_rows = EntitlementRow::list_by_entity(
+            conn,
+            tenant_id,
+            EntitlementEntityId::Subscription(subscription.id),
+        )
+        .await
+        .map_err(Into::<Report<StoreError>>::into)?;
+
+        let entitlements: Vec<Entitlement> = entitlement_rows
+            .into_iter()
+            .map(TryInto::try_into)
+            .collect::<Result<Vec<_>, _>>()?;
 
         Ok(SubscriptionDetails {
             subscription,
@@ -492,6 +559,7 @@ impl SubscriptionInterface for Store {
             invoicing_entity,
             trial_config,
             pending_events,
+            entitlements,
         })
     }
 

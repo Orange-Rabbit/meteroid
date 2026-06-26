@@ -61,6 +61,7 @@ async fn test_credit_note_partial_credits() {
     // 1. Set up manual tax resolver
     store
         .patch_invoicing_entity(
+            common_domain::actor::Actor::System,
             InvoicingEntityPatch {
                 id: INVOICING_ENTITY_ID,
                 tax_resolver: Some(meteroid_store::domain::enums::TaxResolverEnum::Manual),
@@ -79,17 +80,20 @@ async fn test_credit_note_partial_credits() {
 
     // 4. Create a 10% coupon
     let coupon_id = store
-        .create_coupon(CouponNew {
-            code: "CREDIT10".to_string(),
-            description: "10% discount for credit note test".to_string(),
-            tenant_id: TENANT_ID,
-            discount: CouponDiscount::Percentage(dec!(10)),
-            expires_at: None,
-            redemption_limit: None,
-            recurring_value: None,
-            reusable: false,
-            plan_ids: vec![],
-        })
+        .create_coupon(
+            common_domain::actor::Actor::System,
+            CouponNew {
+                code: "CREDIT10".to_string(),
+                description: "10% discount for credit note test".to_string(),
+                tenant_id: TENANT_ID,
+                discount: CouponDiscount::Percentage(dec!(10)),
+                expires_at: None,
+                redemption_limit: None,
+                recurring_value: None,
+                reusable: false,
+                plan_ids: vec![],
+            },
+        )
         .await
         .unwrap()
         .id;
@@ -97,11 +101,11 @@ async fn test_credit_note_partial_credits() {
     // 5. Create subscription with the plan and coupon
     let subscription = services
         .insert_subscription(
+            common_domain::actor::Actor::System,
             CreateSubscription {
                 subscription: SubscriptionNew {
                     customer_id,
                     plan_version_id,
-                    created_by: USER_ID,
                     net_terms: None,
                     invoice_memo: None,
                     invoice_threshold: None,
@@ -124,6 +128,7 @@ async fn test_credit_note_partial_credits() {
                 coupons: Some(CreateSubscriptionCoupons {
                     coupons: vec![CreateSubscriptionCoupon { coupon_id }],
                 }),
+                entitlements: vec![],
             },
             TENANT_ID,
         )
@@ -216,6 +221,7 @@ async fn test_credit_note_partial_credits() {
     // 8. Create first partial credit note for lines 0 and 1
     let credit_note_1 = store
         .create_credit_note(
+            common_domain::actor::Actor::System,
             TENANT_ID,
             CreateCreditNoteParams {
                 invoice_id: invoice.id,
@@ -275,6 +281,7 @@ async fn test_credit_note_partial_credits() {
     // 9. Create second partial credit note for lines 2 and 3
     let credit_note_2 = store
         .create_credit_note(
+            common_domain::actor::Actor::System,
             TENANT_ID,
             CreateCreditNoteParams {
                 invoice_id: invoice.id,
@@ -446,6 +453,7 @@ async fn test_credit_note_partial_credits() {
     // 12. Test that we can't credit the same line twice
     let duplicate_result = store
         .create_credit_note(
+            common_domain::actor::Actor::System,
             TENANT_ID,
             CreateCreditNoteParams {
                 invoice_id: invoice.id,
@@ -504,11 +512,11 @@ async fn test_credit_note_race_condition() {
     // Create subscription
     let subscription = services
         .insert_subscription(
+            common_domain::actor::Actor::System,
             CreateSubscription {
                 subscription: SubscriptionNew {
                     customer_id,
                     plan_version_id,
-                    created_by: USER_ID,
                     net_terms: None,
                     invoice_memo: None,
                     invoice_threshold: None,
@@ -529,6 +537,7 @@ async fn test_credit_note_race_condition() {
                 price_components: None,
                 add_ons: None,
                 coupons: None,
+                entitlements: vec![],
             },
             TENANT_ID,
         )
@@ -577,6 +586,7 @@ async fn test_credit_note_race_condition() {
         async move {
             store1
                 .create_credit_note(
+                    common_domain::actor::Actor::System,
                     TENANT_ID,
                     CreateCreditNoteParams {
                         invoice_id,
@@ -594,6 +604,7 @@ async fn test_credit_note_race_condition() {
         async move {
             store2
                 .create_credit_note(
+                    common_domain::actor::Actor::System,
                     TENANT_ID,
                     CreateCreditNoteParams {
                         invoice_id,
@@ -666,11 +677,11 @@ async fn test_credit_note_refund_with_applied_credits() {
     // Create subscription
     let subscription = services
         .insert_subscription(
+            common_domain::actor::Actor::System,
             CreateSubscription {
                 subscription: SubscriptionNew {
                     customer_id,
                     plan_version_id,
-                    created_by: USER_ID,
                     net_terms: None,
                     invoice_memo: None,
                     invoice_threshold: None,
@@ -691,6 +702,7 @@ async fn test_credit_note_refund_with_applied_credits() {
                 price_components: None,
                 add_ons: None,
                 coupons: None,
+                entitlements: vec![],
             },
             TENANT_ID,
         )
@@ -773,6 +785,7 @@ async fn test_credit_note_refund_with_applied_credits() {
 
     let _res = services
         .mark_invoice_as_paid(
+            common_domain::actor::Actor::System,
             TENANT_ID,
             invoice.id,
             dec!(80.00), // amount due after applying 20€ credits from 100€ plan
@@ -807,6 +820,7 @@ async fn test_credit_note_refund_with_applied_credits() {
     // Create credit note with CreditType::Refund
     let credit_note = store
         .create_credit_note(
+            common_domain::actor::Actor::System,
             TENANT_ID,
             CreateCreditNoteParams {
                 invoice_id: invoice.id,
@@ -860,7 +874,11 @@ async fn test_credit_note_refund_with_applied_credits() {
     );
 
     let finalized = store
-        .finalize_credit_note(TENANT_ID, credit_note.id)
+        .finalize_credit_note(
+            common_domain::actor::Actor::System,
+            TENANT_ID,
+            credit_note.id,
+        )
         .await
         .unwrap();
 
@@ -915,6 +933,7 @@ async fn test_credit_note_partial_amounts() {
     // 1. Set up manual tax resolver with 10% tax
     store
         .patch_invoicing_entity(
+            common_domain::actor::Actor::System,
             InvoicingEntityPatch {
                 id: INVOICING_ENTITY_ID,
                 tax_resolver: Some(meteroid_store::domain::enums::TaxResolverEnum::Manual),
@@ -934,11 +953,11 @@ async fn test_credit_note_partial_amounts() {
     // 4. Create subscription
     let subscription = services
         .insert_subscription(
+            common_domain::actor::Actor::System,
             CreateSubscription {
                 subscription: SubscriptionNew {
                     customer_id,
                     plan_version_id,
-                    created_by: USER_ID,
                     net_terms: None,
                     invoice_memo: None,
                     invoice_threshold: None,
@@ -959,6 +978,7 @@ async fn test_credit_note_partial_amounts() {
                 price_components: None,
                 add_ons: None,
                 coupons: None,
+                entitlements: vec![],
             },
             TENANT_ID,
         )
@@ -1025,6 +1045,7 @@ async fn test_credit_note_partial_amounts() {
     // - Line 1: credit full amount
     let credit_note = store
         .create_credit_note(
+            common_domain::actor::Actor::System,
             TENANT_ID,
             CreateCreditNoteParams {
                 invoice_id: invoice.id,
@@ -1093,16 +1114,22 @@ async fn test_credit_note_partial_amounts() {
         cn_line0.amount_total, -550,
         "CN line 0 total should be -550 (partial)"
     );
-    // For partial credits, quantity=1 and unit_price=credited_subtotal
+    // Effective-rate display: qty × unit_price reconciles to the credited amount, with no
+    // synthesized fractional quantity (and so no repeating decimal).
+    let orig_line0 = &invoice.line_items[0];
+    let q = cn_line0.quantity.expect("CN line 0 should have a quantity");
+    let p = cn_line0
+        .unit_price
+        .expect("CN line 0 should have a unit price");
     assert_eq!(
-        cn_line0.quantity,
-        Some(dec!(1)),
-        "CN line 0 quantity should be 1"
+        (q * p).round_dp(2),
+        dec!(5.00),
+        "CN line 0 qty × unit_price should reconcile to the €5.00 credited"
     );
+    // Manual credit inherits the line's prorated flag (not forced true).
     assert_eq!(
-        cn_line0.unit_price,
-        Some(dec!(-5.00)),
-        "CN line 0 unit_price should be -5.00 (-500 cents)"
+        cn_line0.is_prorated, orig_line0.is_prorated,
+        "manual credit should inherit the original line's prorated flag"
     );
 
     // Line 1: full credit (keeps original quantity/unit_price)
@@ -1120,6 +1147,7 @@ async fn test_credit_note_partial_amounts() {
     // 8. Test validation: amount exceeds original subtotal
     let exceed_result = store
         .create_credit_note(
+            common_domain::actor::Actor::System,
             TENANT_ID,
             CreateCreditNoteParams {
                 invoice_id: invoice.id,
@@ -1151,6 +1179,7 @@ async fn test_credit_note_partial_amounts() {
     // 9. Test validation: negative amount
     let negative_result = store
         .create_credit_note(
+            common_domain::actor::Actor::System,
             TENANT_ID,
             CreateCreditNoteParams {
                 invoice_id: invoice.id,
@@ -1187,6 +1216,7 @@ async fn mark_invoice_paid_and_settle(
 ) {
     services
         .mark_invoice_as_paid(
+            common_domain::actor::Actor::System,
             TENANT_ID,
             invoice.id,
             Decimal::from(invoice.amount_due) / Decimal::from(100),
@@ -1225,11 +1255,11 @@ async fn setup_unpaid_invoice() -> (
 
     let subscription = services
         .insert_subscription(
+            common_domain::actor::Actor::System,
             CreateSubscription {
                 subscription: SubscriptionNew {
                     customer_id,
                     plan_version_id,
-                    created_by: USER_ID,
                     net_terms: None,
                     invoice_memo: None,
                     invoice_threshold: None,
@@ -1250,6 +1280,7 @@ async fn setup_unpaid_invoice() -> (
                 price_components: None,
                 add_ons: None,
                 coupons: None,
+                entitlements: vec![],
             },
             TENANT_ID,
         )
@@ -1302,6 +1333,7 @@ async fn test_credit_note_debt_cancellation_full_settles_invoice() {
 
     let credit_note = store
         .create_credit_note(
+            common_domain::actor::Actor::System,
             TENANT_ID,
             CreateCreditNoteParams {
                 invoice_id: invoice.id,
@@ -1328,7 +1360,11 @@ async fn test_credit_note_debt_cancellation_full_settles_invoice() {
 
     // Finalize and verify settlement.
     store
-        .finalize_credit_note(TENANT_ID, credit_note.id)
+        .finalize_credit_note(
+            common_domain::actor::Actor::System,
+            TENANT_ID,
+            credit_note.id,
+        )
         .await
         .unwrap();
 
@@ -1355,6 +1391,7 @@ async fn test_credit_note_debt_cancellation_partial_leaves_unpaid() {
     // Credit only the first line item.
     let credit_note = store
         .create_credit_note(
+            common_domain::actor::Actor::System,
             TENANT_ID,
             CreateCreditNoteParams {
                 invoice_id: invoice.id,
@@ -1371,7 +1408,11 @@ async fn test_credit_note_debt_cancellation_partial_leaves_unpaid() {
         .unwrap();
 
     store
-        .finalize_credit_note(TENANT_ID, credit_note.id)
+        .finalize_credit_note(
+            common_domain::actor::Actor::System,
+            TENANT_ID,
+            credit_note.id,
+        )
         .await
         .unwrap();
 
@@ -1397,6 +1438,7 @@ async fn test_credit_note_debt_cancellation_rejected_on_paid_invoice() {
 
     let result = store
         .create_credit_note(
+            common_domain::actor::Actor::System,
             TENANT_ID,
             CreateCreditNoteParams {
                 invoice_id: invoice.id,
@@ -1423,6 +1465,7 @@ async fn test_credit_note_credit_to_balance_rejected_on_unpaid_invoice() {
 
     let result = store
         .create_credit_note(
+            common_domain::actor::Actor::System,
             TENANT_ID,
             CreateCreditNoteParams {
                 invoice_id: invoice.id,
@@ -1450,6 +1493,7 @@ async fn test_credit_note_debt_cancellation_void_reverts_invoice() {
 
     let credit_note = store
         .create_credit_note(
+            common_domain::actor::Actor::System,
             TENANT_ID,
             CreateCreditNoteParams {
                 invoice_id: invoice.id,
@@ -1463,7 +1507,11 @@ async fn test_credit_note_debt_cancellation_void_reverts_invoice() {
         .unwrap();
 
     let finalized = store
-        .finalize_credit_note(TENANT_ID, credit_note.id)
+        .finalize_credit_note(
+            common_domain::actor::Actor::System,
+            TENANT_ID,
+            credit_note.id,
+        )
         .await
         .unwrap();
 
@@ -1477,7 +1525,7 @@ async fn test_credit_note_debt_cancellation_void_reverts_invoice() {
 
     // Void the CN.
     store
-        .void_credit_note(TENANT_ID, finalized.id)
+        .void_credit_note(common_domain::actor::Actor::System, TENANT_ID, finalized.id)
         .await
         .unwrap();
 
@@ -1510,6 +1558,7 @@ async fn create_and_finalize_debt_cancellation_cn(
 ) {
     let cn = store
         .create_credit_note(
+            common_domain::actor::Actor::System,
             TENANT_ID,
             CreateCreditNoteParams {
                 invoice_id: invoice.id,
@@ -1522,7 +1571,10 @@ async fn create_and_finalize_debt_cancellation_cn(
         .await
         .unwrap();
 
-    store.finalize_credit_note(TENANT_ID, cn.id).await.unwrap();
+    store
+        .finalize_credit_note(common_domain::actor::Actor::System, TENANT_ID, cn.id)
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
@@ -1581,8 +1633,7 @@ async fn test_create_corrected_invoice_rejected_when_parent_not_fully_credited()
     let err = services
         .create_corrected_invoice_from(TENANT_ID, invoice.id)
         .await
-        .err()
-        .expect("should reject: parent is not fully credited");
+        .expect_err("should reject: parent is not fully credited");
 
     let msg = format!("{:?}", err);
     assert!(
@@ -1605,8 +1656,7 @@ async fn test_create_corrected_invoice_rejected_when_child_already_exists() {
     let err = services
         .create_corrected_invoice_from(TENANT_ID, invoice.id)
         .await
-        .err()
-        .expect("second call should fail — one child per parent");
+        .expect_err("second call should fail — one child per parent");
 
     let msg = format!("{:?}", err);
     assert!(
@@ -1650,6 +1700,7 @@ async fn test_corrected_invoice_rejected_after_partial_debt_cancellation() {
     let line_id = invoice.line_items[0].local_id.clone();
     let cn = store
         .create_credit_note(
+            common_domain::actor::Actor::System,
             TENANT_ID,
             CreateCreditNoteParams {
                 invoice_id: invoice.id,
@@ -1664,7 +1715,10 @@ async fn test_corrected_invoice_rejected_after_partial_debt_cancellation() {
         )
         .await
         .unwrap();
-    store.finalize_credit_note(TENANT_ID, cn.id).await.unwrap();
+    store
+        .finalize_credit_note(common_domain::actor::Actor::System, TENANT_ID, cn.id)
+        .await
+        .unwrap();
 
     // Parent should still have outstanding debt.
     let after_partial = fetch_invoice(&store, invoice.id).await;
@@ -1674,8 +1728,7 @@ async fn test_corrected_invoice_rejected_after_partial_debt_cancellation() {
     let err = services
         .create_corrected_invoice_from(TENANT_ID, invoice.id)
         .await
-        .err()
-        .expect("should refuse: parent is not fully credited");
+        .expect_err("should refuse: parent is not fully credited");
 
     let msg = format!("{:?}", err);
     assert!(
@@ -1695,6 +1748,7 @@ async fn test_cn_with_reissue_unpaid_full_dc_happy_path() {
 
     let (credit_note, corrected) = services
         .create_and_finalize_credit_note_with_reissue(
+            common_domain::actor::Actor::System,
             TENANT_ID,
             CreateCreditNoteParams {
                 invoice_id: invoice.id,
@@ -1747,6 +1801,7 @@ async fn test_cn_with_reissue_rejected_if_already_reissued() {
 
     services
         .create_and_finalize_credit_note_with_reissue(
+            common_domain::actor::Actor::System,
             TENANT_ID,
             CreateCreditNoteParams {
                 invoice_id: invoice.id,
@@ -1767,8 +1822,7 @@ async fn test_cn_with_reissue_rejected_if_already_reissued() {
     let err = services
         .create_corrected_invoice_from(TENANT_ID, invoice.id)
         .await
-        .err()
-        .expect("second reissue should fail: child already exists");
+        .expect_err("second reissue should fail: child already exists");
 
     let msg = format!("{:?}", err);
     assert!(
@@ -1786,6 +1840,7 @@ async fn test_cn_with_reissue_rejected_when_partial() {
     let line_id = invoice.line_items[0].local_id.clone();
     let err = services
         .create_and_finalize_credit_note_with_reissue(
+            common_domain::actor::Actor::System,
             TENANT_ID,
             CreateCreditNoteParams {
                 invoice_id: invoice.id,
@@ -1800,8 +1855,7 @@ async fn test_cn_with_reissue_rejected_when_partial() {
             true,
         )
         .await
-        .err()
-        .expect("partial CN + reissue must fail");
+        .expect_err("partial CN + reissue must fail");
 
     let msg = format!("{:?}", err);
     assert!(
@@ -1830,6 +1884,7 @@ async fn test_cn_with_reissue_paid_full_refund_happy_path() {
 
     let (credit_note, corrected) = services
         .create_and_finalize_credit_note_with_reissue(
+            common_domain::actor::Actor::System,
             TENANT_ID,
             CreateCreditNoteParams {
                 invoice_id: invoice.id,
@@ -1878,6 +1933,7 @@ async fn test_cn_with_reissue_paid_full_ctb_happy_path() {
 
     let (credit_note, corrected) = services
         .create_and_finalize_credit_note_with_reissue(
+            common_domain::actor::Actor::System,
             TENANT_ID,
             CreateCreditNoteParams {
                 invoice_id: invoice.id,
@@ -1915,7 +1971,6 @@ async fn create_plan_with_4_components(
     conn: &mut PgConn,
 ) -> (PlanVersionId, Vec<PriceComponentId>) {
     use diesel_async::AsyncConnection;
-    use diesel_async::scoped_futures::ScopedFutureExt;
     use diesel_models::errors::DatabaseErrorContainer;
 
     let plan_id = common_domain::ids::PlanId::new();
@@ -1925,98 +1980,92 @@ async fn create_plan_with_4_components(
         .map(|_| common_domain::ids::PriceComponentId::new())
         .collect();
 
-    conn.transaction(|tx| {
+    conn.transaction(async |tx| {
         let component_ids = component_ids.clone();
-        async move {
-            PlanRowNew {
-                id: plan_id,
-                name: "CreditNoteTestPlan".to_string(),
-                description: Some("Plan for credit note testing".to_string()),
-                created_by: USER_ID,
+        PlanRowNew {
+            id: plan_id,
+            name: "CreditNoteTestPlan".to_string(),
+            description: Some("Plan for credit note testing".to_string()),
+            tenant_id: TENANT_ID,
+            product_family_id: PRODUCT_FAMILY_ID,
+            plan_type: PlanTypeEnum::Standard,
+            status: PlanStatusEnum::Active,
+        }
+        .insert(tx)
+        .await?;
+
+        PlanVersionRowNew {
+            id: plan_version_id,
+            is_draft_version: false,
+            plan_id,
+            version: 1,
+            trial_duration_days: None,
+            tenant_id: TENANT_ID,
+            period_start_day: None,
+            net_terms: 0,
+            currency: "EUR".to_string(),
+            billing_cycles: None,
+            trialing_plan_id: None,
+            trial_is_free: false,
+            uses_product_pricing: true,
+        }
+        .insert(tx)
+        .await?;
+
+        PlanRowPatch {
+            id: plan_id,
+            tenant_id: TENANT_ID,
+            name: None,
+            description: None,
+            active_version_id: Some(Some(plan_version_id)),
+            draft_version_id: None,
+            self_service_rank: None,
+        }
+        .update(tx)
+        .await?;
+
+        // Create 4 components with prices: 1000, 2000, 3000, 4000 cents
+        for (i, component_id) in component_ids.iter().enumerate() {
+            let price = rust_decimal::Decimal::new(((i + 1) * 1000) as i64, 2);
+            let product_id = common_domain::ids::ProductId::new();
+            ProductRowNew {
+                id: product_id,
+                name: format!("Component {} Product", i + 1),
+                description: None,
                 tenant_id: TENANT_ID,
                 product_family_id: PRODUCT_FAMILY_ID,
-                plan_type: PlanTypeEnum::Standard,
-                status: PlanStatusEnum::Active,
+                fee_type: DieselFeeTypeEnum::Rate,
+                fee_structure: serde_json::to_value(
+                    &meteroid_store::domain::prices::FeeStructure::Rate {},
+                )
+                .unwrap(),
+                catalog: true,
             }
             .insert(tx)
             .await?;
 
-            PlanVersionRowNew {
-                id: plan_version_id,
-                is_draft_version: false,
-                plan_id,
-                version: 1,
-                trial_duration_days: None,
-                tenant_id: TENANT_ID,
-                period_start_day: None,
-                net_terms: 0,
-                currency: "EUR".to_string(),
-                billing_cycles: None,
-                created_by: USER_ID,
-                trialing_plan_id: None,
-                trial_is_free: false,
-                uses_product_pricing: true,
-            }
-            .insert(tx)
-            .await?;
-
-            PlanRowPatch {
-                id: plan_id,
-                tenant_id: TENANT_ID,
-                name: None,
-                description: None,
-                active_version_id: Some(Some(plan_version_id)),
-                draft_version_id: None,
-                self_service_rank: None,
-            }
-            .update(tx)
-            .await?;
-
-            // Create 4 components with prices: 1000, 2000, 3000, 4000 cents
-            for (i, component_id) in component_ids.iter().enumerate() {
-                let price = rust_decimal::Decimal::new(((i + 1) * 1000) as i64, 2);
-                let product_id = common_domain::ids::ProductId::new();
-                ProductRowNew {
-                    id: product_id,
-                    name: format!("Component {} Product", i + 1),
-                    description: None,
-                    created_by: USER_ID,
-                    tenant_id: TENANT_ID,
-                    product_family_id: PRODUCT_FAMILY_ID,
-                    fee_type: DieselFeeTypeEnum::Rate,
-                    fee_structure: serde_json::to_value(
-                        &meteroid_store::domain::prices::FeeStructure::Rate {},
-                    )
+            PriceComponentRowNew {
+                id: *component_id,
+                name: format!("Component {}", i + 1),
+                legacy_fee: Some(
+                    FeeType::Rate {
+                        rates: vec![TermRate {
+                            price,
+                            term: BillingPeriodEnum::Monthly,
+                        }],
+                    }
+                    .try_into()
                     .unwrap(),
-                    catalog: true,
-                }
-                .insert(tx)
-                .await?;
-
-                PriceComponentRowNew {
-                    id: *component_id,
-                    name: format!("Component {}", i + 1),
-                    legacy_fee: Some(
-                        FeeType::Rate {
-                            rates: vec![TermRate {
-                                price,
-                                term: BillingPeriodEnum::Monthly,
-                            }],
-                        }
-                        .try_into()
-                        .unwrap(),
-                    ),
-                    plan_version_id,
-                    product_id: Some(product_id),
-                    billable_metric_id: None,
-                }
-                .insert(tx)
-                .await?;
+                ),
+                plan_version_id,
+                product_id: Some(product_id),
+                billable_metric_id: None,
             }
-
-            Ok::<(), DatabaseErrorContainer>(())
+            .insert(tx)
+            .await?;
         }
-        .scope_boxed()
+
+        Ok::<(), DatabaseErrorContainer>(())
     })
     .await
     .unwrap();
@@ -2043,7 +2092,6 @@ async fn create_customer_with_tax(conn: &mut PgConn, balance_cents: i64) -> Cust
         id: customer_id,
         name: format!("Credit Note Test Customer {}", Uuid::new_v4()),
         created_at: Some(chrono::Utc::now().naive_utc()),
-        created_by: USER_ID,
         tenant_id: TENANT_ID,
         alias: None,
         balance_value_cents: balance_cents,

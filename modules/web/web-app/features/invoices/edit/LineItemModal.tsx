@@ -136,7 +136,7 @@ export const LineItemModal = ({
             <div className="space-y-4 py-4">
               {(isUsageBased || hasSublines) && (
                 <div className="flex items-center gap-2 p-3 bg-muted/50 border border-border rounded-md">
-                  <Info size={16} className="text-muted-foreground flex-shrink-0" />
+                  <Info size={16} className="text-muted-foreground shrink-0" />
                   <span className="text-xs text-foreground">
                     {isUsageBased && !hasSublines && (
                       <>
@@ -364,7 +364,7 @@ export const LineItemModal = ({
                       size="sm"
                       className="h-7 px-0 text-xs"
                       onClick={() =>
-                        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                         
                         sublinesArray.append({
                           name: '',
                           quantity: 1,

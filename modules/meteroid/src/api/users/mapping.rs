@@ -8,6 +8,13 @@ pub mod role {
             OrganizationUserRole::Member => server::OrganizationUserRole::Member,
         }
     }
+
+    pub fn server_to_domain(role: server::OrganizationUserRole) -> OrganizationUserRole {
+        match role {
+            server::OrganizationUserRole::Admin => OrganizationUserRole::Admin,
+            server::OrganizationUserRole::Member => OrganizationUserRole::Member,
+        }
+    }
 }
 
 pub mod user {
@@ -32,7 +39,7 @@ pub mod user {
 
     pub fn domain_to_proto(domain: User) -> server::User {
         server::User {
-            id: domain.id.to_string(),
+            id: domain.id.as_proto(),
             email: domain.email,
             department: domain.department,
             first_name: domain.first_name,
@@ -43,7 +50,7 @@ pub mod user {
 
     pub fn domain_with_role_to_proto(domain: UserWithRole) -> server::UserWithRole {
         server::UserWithRole {
-            id: domain.id.to_string(),
+            id: domain.id.as_proto(),
             email: domain.email,
             department: domain.department,
             first_name: domain.first_name,

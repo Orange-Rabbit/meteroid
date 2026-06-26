@@ -1,5 +1,12 @@
 use super::AppState;
 
+use crate::api_rest::QueryParams;
+use crate::api_rest::addons::mapping;
+use crate::api_rest::addons::model::*;
+
+use crate::api_rest::error::RestErrorResponse;
+use crate::api_rest::model::{PaginationExt, validate_order_by};
+use crate::errors::RestApiError;
 use axum::extract::{Path, State};
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
@@ -10,13 +17,6 @@ use http::StatusCode;
 use meteroid_store::domain::add_ons::{AddOnNew, AddOnPatch};
 use meteroid_store::domain::price_components::PriceEntry;
 use meteroid_store::repositories::add_ons::AddOnInterface;
-
-use crate::api_rest::QueryParams;
-use crate::api_rest::addons::mapping;
-use crate::api_rest::addons::model::*;
-use crate::api_rest::error::RestErrorResponse;
-use crate::api_rest::model::{PaginationExt, validate_order_by};
-use crate::errors::RestApiError;
 
 // ── List add-ons ──────────────────────────────────────────────
 
@@ -128,15 +128,19 @@ pub(crate) async fn create_addon(
 ) -> Result<impl IntoResponse, RestApiError> {
     let addon = app_state
         .store
-        .create_add_on(AddOnNew {
-            name: payload.name,
-            tenant_id: authorized_state.tenant_id,
-            product_id: payload.product_id,
-            price_id: payload.price_id,
-            description: payload.description,
-            self_serviceable: payload.self_serviceable,
-            max_instances_per_subscription: payload.max_instances_per_subscription,
-        })
+        .create_add_on(
+            authorized_state.as_actor(),
+            AddOnNew {
+                name: payload.name,
+                tenant_id: authorized_state.tenant_id,
+                product_id: payload.product_id,
+                price_id: payload.price_id,
+                description: payload.description,
+                self_serviceable: payload.self_serviceable,
+                max_instances_per_subscription: payload.max_instances_per_subscription,
+                entitlements: vec![],
+            },
+        )
         .await
         .map_err(|e| {
             log::error!("Error creating add-on: {e}");
@@ -175,6 +179,7 @@ pub(crate) async fn update_addon(
     let addon = app_state
         .store
         .update_add_on(
+            authorized_state.as_actor(),
             AddOnPatch {
                 id: addon_id,
                 tenant_id: authorized_state.tenant_id,
@@ -184,7 +189,6 @@ pub(crate) async fn update_addon(
                 max_instances_per_subscription: payload.max_instances_per_subscription,
             },
             price_entry,
-            authorized_state.actor_id,
         )
         .await
         .map_err(|e| {
@@ -218,7 +222,11 @@ pub(crate) async fn archive_addon(
 ) -> Result<impl IntoResponse, RestApiError> {
     app_state
         .store
-        .archive_add_on(addon_id, authorized_state.tenant_id)
+        .archive_add_on(
+            authorized_state.as_actor(),
+            addon_id,
+            authorized_state.tenant_id,
+        )
         .await
         .map_err(|e| {
             log::error!("Error archiving add-on: {e}");

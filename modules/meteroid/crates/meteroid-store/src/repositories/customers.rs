@@ -1,4 +1,5 @@
 use crate::StoreResult;
+use crate::domain::entity_activity::Actor;
 use crate::domain::outbox_event::OutboxEvent;
 use crate::domain::pgmq::{
     HubspotSyncCustomerDomain, HubspotSyncRequestEvent, PennylaneSyncCustomer,
@@ -19,13 +20,12 @@ use crate::repositories::pgmq::PgmqInterface;
 use crate::store::{PgConn, Store};
 use common_domain::ids::{AliasOr, BaseId, ConnectorId, CustomerId, TenantId};
 use common_eventbus::Event;
-use diesel_async::scoped_futures::ScopedFutureExt;
 use diesel_models::customers::{CustomerRow, CustomerRowNew, CustomerRowPatch, CustomerRowUpdate};
 use diesel_models::subscriptions::SubscriptionRow;
 use diesel_models::tenants::TenantRow;
 use error_stack::{Report, bail};
 use meteroid_store_macros::with_conn_delegate;
-use uuid::Uuid;
+use scoped_futures::ScopedFutureExt;
 
 fn validate_customer_currency(
     currency: &str,
@@ -94,18 +94,21 @@ pub trait CustomersInterface {
 
     async fn insert_customer(
         &self,
+        actor: Actor,
         customer: CustomerNew,
         tenant_id: TenantId,
     ) -> StoreResult<Customer>;
 
     async fn insert_customer_batch(
         &self,
+        actor: Actor,
         batch: Vec<CustomerNew>,
         tenant_id: TenantId,
     ) -> StoreResult<Vec<Customer>>;
 
     async fn upsert_customer_batch(
         &self,
+        actor: Actor,
         batch: Vec<CustomerNew>,
         tenant_id: TenantId,
     ) -> StoreResult<Vec<Customer>>;
@@ -115,13 +118,14 @@ pub trait CustomersInterface {
     /// rows are upserted. Used by CSV import where partial success is expected.
     async fn upsert_customer_batch_lenient(
         &self,
+        actor: Actor,
         batch: Vec<CustomerNew>,
         tenant_id: TenantId,
     ) -> StoreResult<CustomerBatchResult>;
 
     async fn patch_customer(
         &self,
-        actor: Uuid,
+        actor: Actor,
         tenant_id: TenantId,
         customer: CustomerPatch,
     ) -> StoreResult<Option<Customer>>;
@@ -136,20 +140,21 @@ pub trait CustomersInterface {
 
     async fn update_customer(
         &self,
-        actor: Uuid,
+        actor: Actor,
         tenant_id: TenantId,
         customer: CustomerUpdate,
     ) -> StoreResult<Customer>;
 
     async fn archive_customer(
         &self,
-        actor: Uuid,
+        actor: Actor,
         tenant_id: TenantId,
         id_or_alias: AliasOr<CustomerId>,
     ) -> StoreResult<()>;
 
     async fn unarchive_customer(
         &self,
+        actor: Actor,
         tenant_id: TenantId,
         id_or_alias: AliasOr<CustomerId>,
     ) -> StoreResult<()>;
@@ -305,6 +310,7 @@ impl CustomersInterface for Store {
 
     async fn insert_customer(
         &self,
+        actor: Actor,
         customer: CustomerNew,
         tenant_id: TenantId,
     ) -> StoreResult<Customer> {
@@ -334,11 +340,14 @@ impl CustomersInterface for Store {
 
         let res: Customer = self
             .transaction(|conn| {
+                let actor = &actor;
                 async move {
                     let new_customer: Customer = customer.insert(conn).await?.try_into()?;
                     self.internal
-                        .insert_outbox_events_tx(
+                        .record_outbox_batch_tx(
                             conn,
+                            tenant_id,
+                            actor,
                             vec![OutboxEvent::customer_created(new_customer.clone().into())],
                         )
                         .await?;
@@ -350,11 +359,7 @@ impl CustomersInterface for Store {
 
         let _ = self
             .eventbus
-            .publish(Event::customer_created(
-                res.created_by,
-                res.id.as_uuid(),
-                res.tenant_id.as_uuid(),
-            ))
+            .publish(Event::customer_created(actor, res.id, res.tenant_id))
             .await;
 
         Ok(res)
@@ -362,6 +367,7 @@ impl CustomersInterface for Store {
 
     async fn insert_customer_batch(
         &self,
+        actor: Actor,
         batch: Vec<CustomerNew>,
         tenant_id: TenantId,
     ) -> StoreResult<Vec<Customer>> {
@@ -369,6 +375,7 @@ impl CustomersInterface for Store {
 
         let res: Vec<Customer> = self
             .transaction(|conn| {
+                let actor = &actor;
                 async move {
                     let res: Vec<Customer> =
                         CustomerRow::insert_customer_batch(conn, prepared_batch)
@@ -382,7 +389,7 @@ impl CustomersInterface for Store {
                         .collect();
 
                     self.internal
-                        .insert_outbox_events_tx(conn, outbox_events)
+                        .record_outbox_batch_tx(conn, tenant_id, actor, outbox_events)
                         .await?;
 
                     Ok(res)
@@ -391,12 +398,13 @@ impl CustomersInterface for Store {
             })
             .await?;
 
-        self.publish_customer_created_events(&res).await;
+        self.publish_customer_created_events(&actor, &res).await;
         Ok(res)
     }
 
     async fn upsert_customer_batch(
         &self,
+        actor: Actor,
         batch: Vec<CustomerNew>,
         tenant_id: TenantId,
     ) -> StoreResult<Vec<Customer>> {
@@ -404,6 +412,7 @@ impl CustomersInterface for Store {
 
         let res: Vec<Customer> = self
             .transaction(|conn| {
+                let actor = &actor;
                 async move {
                     let res: Vec<Customer> =
                         CustomerRow::upsert_customer_batch(conn, prepared_batch)
@@ -417,7 +426,7 @@ impl CustomersInterface for Store {
                         .collect();
 
                     self.internal
-                        .insert_outbox_events_tx(conn, outbox_events)
+                        .record_outbox_batch_tx(conn, tenant_id, actor, outbox_events)
                         .await?;
 
                     Ok(res)
@@ -426,12 +435,13 @@ impl CustomersInterface for Store {
             })
             .await?;
 
-        self.publish_customer_created_events(&res).await;
+        self.publish_customer_created_events(&actor, &res).await;
         Ok(res)
     }
 
     async fn upsert_customer_batch_lenient(
         &self,
+        actor: Actor,
         batch: Vec<CustomerNew>,
         tenant_id: TenantId,
     ) -> StoreResult<CustomerBatchResult> {
@@ -448,6 +458,7 @@ impl CustomersInterface for Store {
 
         let res: Vec<Customer> = self
             .transaction(|conn| {
+                let actor = &actor;
                 async move {
                     let res: Vec<Customer> = CustomerRow::upsert_customer_batch(conn, prepared)
                         .await
@@ -460,7 +471,7 @@ impl CustomersInterface for Store {
                         .collect();
 
                     self.internal
-                        .insert_outbox_events_tx(conn, outbox_events)
+                        .record_outbox_batch_tx(conn, tenant_id, actor, outbox_events)
                         .await?;
 
                     Ok(res)
@@ -469,7 +480,7 @@ impl CustomersInterface for Store {
             })
             .await?;
 
-        self.publish_customer_created_events(&res).await;
+        self.publish_customer_created_events(&actor, &res).await;
         Ok(CustomerBatchResult {
             created: res,
             failures,
@@ -478,7 +489,7 @@ impl CustomersInterface for Store {
 
     async fn patch_customer(
         &self,
-        actor: Uuid,
+        actor: Actor,
         tenant_id: TenantId,
         customer: CustomerPatch,
     ) -> StoreResult<Option<Customer>> {
@@ -497,6 +508,7 @@ impl CustomersInterface for Store {
 
         let updated = self
             .transaction(|conn| {
+                let actor = &actor;
                 async move {
                     let updated: Option<CustomerRow> = patch_model
                         .update(conn, tenant_id)
@@ -510,7 +522,7 @@ impl CustomersInterface for Store {
                             let outbox_events =
                                 vec![OutboxEvent::customer_updated(updated.clone().into())];
                             self.internal
-                                .insert_outbox_events_tx(conn, outbox_events)
+                                .record_outbox_batch_tx(conn, tenant_id, actor, outbox_events)
                                 .await?;
                             Ok(Some(updated))
                         }
@@ -525,11 +537,7 @@ impl CustomersInterface for Store {
             Some(updated) => {
                 let _ = self
                     .eventbus
-                    .publish(Event::customer_patched(
-                        actor,
-                        updated.id.as_uuid(),
-                        tenant_id.as_uuid(),
-                    ))
+                    .publish(Event::customer_patched(actor, updated.id, tenant_id))
                     .await;
 
                 Ok(Some(updated))
@@ -564,7 +572,7 @@ impl CustomersInterface for Store {
 
     async fn update_customer(
         &self,
-        actor: Uuid,
+        actor: Actor,
         tenant_id: TenantId,
         customer: CustomerUpdate,
     ) -> StoreResult<Customer> {
@@ -603,7 +611,6 @@ impl CustomersInterface for Store {
                 .shipping_address
                 .map(TryInto::try_into)
                 .transpose()?,
-            updated_by: actor,
             invoicing_entity_id: invoicing_entity.id,
             vat_number: customer.vat_number,
             custom_taxes: serde_json::to_value(&customer.custom_taxes).map_err(|e| {
@@ -615,6 +622,7 @@ impl CustomersInterface for Store {
 
         let updated = self
             .transaction(|conn| {
+                let actor = &actor;
                 async move {
                     let updated = update_model
                         .update(conn, tenant_id)
@@ -626,7 +634,7 @@ impl CustomersInterface for Store {
 
                     let outbox_events = vec![OutboxEvent::customer_updated(updated.clone().into())];
                     self.internal
-                        .insert_outbox_events_tx(conn, outbox_events)
+                        .record_outbox_batch_tx(conn, tenant_id, actor, outbox_events)
                         .await?;
 
                     Ok(updated)
@@ -637,11 +645,7 @@ impl CustomersInterface for Store {
 
         let _ = self
             .eventbus
-            .publish(Event::customer_updated(
-                actor,
-                updated.id.as_uuid(),
-                tenant_id.as_uuid(),
-            ))
+            .publish(Event::customer_updated(actor, updated.id, tenant_id))
             .await;
 
         Ok(updated)
@@ -649,10 +653,11 @@ impl CustomersInterface for Store {
 
     async fn archive_customer(
         &self,
-        actor: Uuid,
+        actor: Actor,
         tenant_id: TenantId,
         id_or_alias: AliasOr<CustomerId>,
     ) -> StoreResult<()> {
+        use crate::domain::entity_activity::{Activity, ActivityType, AuditInput, EntityType};
         use diesel_models::enums::SubscriptionStatusEnum as DieselSubscriptionStatusEnum;
 
         let mut conn = self.get_conn().await?;
@@ -695,19 +700,37 @@ impl CustomersInterface for Store {
             .into());
         }
 
-        CustomerRow::archive(&mut conn, customer.id, tenant_id, actor)
-            .await
-            .map(|_| ())
-            .map_err(Into::<Report<StoreError>>::into)
+        let customer_id = customer.id;
+        self.transaction(|conn| {
+            let actor = &actor;
+            async move {
+                CustomerRow::archive(conn, customer_id, tenant_id)
+                    .await
+                    .map_err(Into::<Report<StoreError>>::into)?;
+
+                let activity = Activity::new(
+                    ActivityType::CustomerArchived,
+                    EntityType::Customer,
+                    customer_id.as_uuid(),
+                );
+                self.internal
+                    .record_audit_tx(conn, tenant_id, actor, AuditInput::Activity(activity))
+                    .await
+            }
+            .scope_boxed()
+        })
+        .await
     }
 
     async fn unarchive_customer(
         &self,
+        actor: Actor,
         tenant_id: TenantId,
         id_or_alias: AliasOr<CustomerId>,
     ) -> StoreResult<()> {
-        let mut conn = self.get_conn().await?;
+        use crate::domain::entity_activity::{Activity, ActivityType, AuditInput, EntityType};
 
+        let mut conn = self.get_conn().await?;
         let customer = CustomerRow::find_by_id_or_alias_including_archived(
             &mut conn,
             tenant_id,
@@ -715,11 +738,28 @@ impl CustomersInterface for Store {
         )
         .await
         .map_err(Into::<Report<StoreError>>::into)?;
+        let customer_id = customer.id;
+        drop(conn);
 
-        CustomerRow::unarchive(&mut conn, customer.id, tenant_id)
-            .await
-            .map(|_| ())
-            .map_err(Into::<Report<StoreError>>::into)
+        self.transaction(|conn| {
+            let actor = &actor;
+            async move {
+                CustomerRow::unarchive(conn, customer_id, tenant_id)
+                    .await
+                    .map_err(Into::<Report<StoreError>>::into)?;
+
+                let activity = Activity::new(
+                    ActivityType::CustomerUnarchived,
+                    EntityType::Customer,
+                    customer_id.as_uuid(),
+                );
+                self.internal
+                    .record_audit_tx(conn, tenant_id, actor, AuditInput::Activity(activity))
+                    .await
+            }
+            .scope_boxed()
+        })
+        .await
     }
 
     async fn patch_customer_conn_meta(
@@ -943,12 +983,12 @@ impl Store {
         Ok((valid, failures))
     }
 
-    async fn publish_customer_created_events(&self, customers: &[Customer]) {
+    async fn publish_customer_created_events(&self, actor: &Actor, customers: &[Customer]) {
         let _ = futures::future::join_all(customers.iter().map(|customer| {
             self.eventbus.publish(Event::customer_created(
-                customer.created_by,
-                customer.id.as_uuid(),
-                customer.tenant_id.as_uuid(),
+                actor.clone(),
+                customer.id,
+                customer.tenant_id,
             ))
         }))
         .await

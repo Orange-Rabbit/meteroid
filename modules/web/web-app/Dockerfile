@@ -13,7 +13,7 @@ RUN (cd modules/web/ && turbo prune --scope=@md/web --docker)
 
 FROM base AS installer
 WORKDIR /app
-RUN yarn global add pnpm@10 turbo
+RUN yarn global add pnpm@11 turbo
 
 COPY --from=builder /app/.gitignore .gitignore
 COPY --from=builder /app/modules/web/web-app/nginx.conf nginx.conf
@@ -24,7 +24,7 @@ COPY --from=builder /app/modules/web/out/pnpm-lock.yaml modules/web/pnpm-lock.ya
 
 
 # First install the dependencies (as they change less often)
-RUN pnpm install --filter=@md/web --ignore-scripts --prefix modules/web
+RUN pnpm install --ignore-scripts --prefix modules/web
 
 RUN apk add --no-cache libc6-compat
 RUN apk update
@@ -36,8 +36,12 @@ COPY --link --from=builder /app/modules/metering/proto/ modules/metering/proto/
 COPY --link --from=builder /app/crates/common-grpc/proto/ crates/common-grpc/proto/
 COPY --link --from=builder /app/buf.work.yaml buf.work.yaml
 # Run all the postinstall scripts
-RUN cd modules/web && pnpm install --filter=@md/web
-# Build the project
+RUN cd modules/web && pnpm install
+# Re-run postinstall scripts skipped by --ignore-scripts above:
+#   @md/icons: svgr-generated dist/ used as the package entry
+#   @md/web:   buf-generated connect-query proto bindings under web-app/src/rpc
+RUN cd modules/web && pnpm --filter @md/icons run build
+RUN cd modules/web && pnpm --filter @md/web run generate:proto
 RUN cd modules/web/web-app && pnpm run build:js
 
 # nginx state for serving content

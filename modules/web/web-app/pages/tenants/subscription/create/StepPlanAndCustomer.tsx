@@ -1,11 +1,7 @@
-import { disableQuery } from '@connectrpc/connect-query'
-import {
-  Button,
-  Form,
-  GenericFormField,
-} from '@ui/components'
+import { skipToken } from '@connectrpc/connect-query'
+import { Button, Form, GenericFormField } from '@ui/components'
 import { useAtom } from 'jotai'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useWizard } from 'react-use-wizard'
 import { z } from 'zod'
@@ -13,15 +9,20 @@ import { z } from 'zod'
 import { PageSection } from '@/components/layouts/shared/PageSection'
 import { AddOnCouponSelector } from '@/features/addons/AddOnCouponSelector'
 import { CustomerSelect } from '@/features/customers/CustomerSelect'
+import { PendingEntitlementsPanel } from '@/features/entitlements/pending/PendingEntitlementsPanel'
 import { SubscribablePlanVersionSelect } from '@/features/plans/SubscribablePlanVersionSelect'
-import { CreateSubscriptionPriceComponents } from '@/features/subscriptions/pricecomponents/CreateSubscriptionPriceComponents'
+import {
+  CreateSubscriptionPriceComponents
+} from '@/features/subscriptions/pricecomponents/CreateSubscriptionPriceComponents'
 import { useZodForm } from '@/hooks/useZodForm'
 import { useQuery } from '@/lib/connectrpc'
+import { env } from '@/lib/env'
 import { createSubscriptionAtom } from '@/pages/tenants/subscription/create/state'
 import { listAddOns } from '@/rpc/api/addons/v1/addons-AddOnsService_connectquery'
 import { listCoupons } from '@/rpc/api/coupons/v1/coupons-CouponsService_connectquery'
 import { ListCouponRequest_CouponFilter } from '@/rpc/api/coupons/v1/coupons_pb'
 import { getPlanWithVersionByVersionId } from '@/rpc/api/plans/v1/plans-PlansService_connectquery'
+import { listPriceComponents } from '@/rpc/api/pricecomponents/v1/pricecomponents-PriceComponentsService_connectquery'
 
 // TODO confirm & reset form on leave
 export const StepPlanAndCustomer = () => {
@@ -60,13 +61,13 @@ export const StepPlanAndCustomer = () => {
     listAddOns,
     planVersionId
       ? {
-          planVersionId,
-          pagination: {
-            perPage: 100,
-            page: 0,
-          },
-        }
-      : disableQuery
+        planVersionId,
+        pagination: {
+          perPage: 100,
+          page: 0,
+        },
+      }
+      : skipToken
   )
   const couponsQuery = useQuery(listCoupons, {
     pagination: {
@@ -92,6 +93,35 @@ export const StepPlanAndCustomer = () => {
     if (!selectedPlanId) return true
     return coupon.planIds.includes(selectedPlanId)
   }
+
+  const planComponentsQuery = useQuery(
+    listPriceComponents,
+    planVersionId ? { planVersionId } : skipToken
+  )
+  const planComponents = useMemo(
+    () => planComponentsQuery.data?.components ?? [],
+    [planComponentsQuery.data?.components]
+  )
+
+  // Collect product ids from in-flight (not-yet-persisted) extra and overridden price components.
+  // Only components with an existing productId contribute — new-product refs have no id yet.
+  const extraProductIds = useMemo(() => {
+    const ids = new Set<string>()
+    for (const c of state.components.extra) {
+      if (c.productId) ids.add(c.productId)
+    }
+    for (const c of state.components.overridden) {
+      if (c.productId) ids.add(c.productId)
+    }
+    return Array.from(ids)
+  }, [state.components.extra, state.components.overridden])
+
+  const removedProductIds = useMemo(() => {
+    const removedSet = new Set(state.components.removed)
+    return planComponents
+      .filter(c => removedSet.has(c.id) && c.productId)
+      .map(c => c.productId!)
+  }, [state.components.removed, planComponents])
 
   const onSubmit = async (data: z.infer<typeof schema>) => {
     setState({
@@ -120,7 +150,7 @@ export const StepPlanAndCustomer = () => {
               label="Plan"
               name="planVersionId"
               render={({ field }) => (
-                <SubscribablePlanVersionSelect value={field.value} onChange={field.onChange} />
+                <SubscribablePlanVersionSelect value={field.value} onChange={field.onChange}/>
               )}
             />
             <GenericFormField
@@ -129,7 +159,7 @@ export const StepPlanAndCustomer = () => {
               label="Customer"
               name="customerId"
               render={({ field }) => (
-                <CustomerSelect value={field.value} onChange={field.onChange} />
+                <CustomerSelect value={field.value} onChange={field.onChange}/>
               )}
             />
           </div>
@@ -174,12 +204,18 @@ export const StepPlanAndCustomer = () => {
               <AddOnCouponSelector
                 selectedAddOns={state.addOns}
                 onAddOnAdd={id =>
-                  setState(prev => ({ ...prev, addOns: [...prev.addOns, { addOnId: id }] }))
+                  setState(prev => ({ ...prev, addOns: [...prev.addOns, { addOnId: id, quantity: 1 }] }))
                 }
                 onAddOnRemove={id =>
                   setState(prev => ({
                     ...prev,
                     addOns: prev.addOns.filter(a => a.addOnId !== id),
+                  }))
+                }
+                onAddOnQuantityChange={(id, qty) =>
+                  setState(prev => ({
+                    ...prev,
+                    addOns: prev.addOns.map(a => a.addOnId === id ? { ...a, quantity: qty } : a),
                   }))
                 }
                 availableAddOns={availableAddOns}
@@ -201,6 +237,28 @@ export const StepPlanAndCustomer = () => {
                 currency={planQuery.data?.plan?.version?.currency}
               />
             </PageSection>
+
+            {env.entitlementsEnabled && planVersionId && (
+              <PageSection
+                className="fadeIn"
+                header={{
+                  title: 'Entitlements',
+                  subtitle: 'Grant feature access to subscribers of this subscription',
+                }}
+              >
+                <PendingEntitlementsPanel
+                  selection={{
+                    planVersionId,
+                    addOnIds: state.addOns.map(a => a.addOnId),
+                    extraProductIds,
+                    removedProductIds,
+                  }}
+                  pending={state.entitlements}
+                  onChange={next => setState(prev => ({ ...prev, entitlements: next }))}
+                  entityLabel="subscription"
+                />
+              </PageSection>
+            )}
 
             <div className="flex gap-2 justify-end">
               <Button

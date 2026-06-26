@@ -109,6 +109,7 @@ fn map_proration_summary(
         credits_total_cents: summary.credits_total_cents,
         charges_total_cents: summary.charges_total_cents,
         net_amount_cents: summary.net_amount_cents,
+        arrears_charge_cents: summary.arrears_charge_cents,
         proration_factor: summary.proration_factor,
         days_remaining: summary.days_remaining,
         days_in_period: summary.days_in_period,
@@ -275,6 +276,8 @@ impl PortalSubscriptionService for PortalSubscriptionServiceComponents {
 
         let headline_fee = pick_headline_fee(&details.price_components);
 
+        let online_payment_enabled = self.has_online_payment_config(&details);
+
         let subscription = SubscriptionDetails {
             id: details.subscription.id.as_proto(),
             plan_name: details.subscription.plan_name.clone(),
@@ -292,16 +295,27 @@ impl PortalSubscriptionService for PortalSubscriptionServiceComponents {
                 let event_type = match e.event_type {
                     ScheduledEventTypeEnum::ApplyPlanChange => PendingEventType::PlanChange,
                     ScheduledEventTypeEnum::CancelSubscription => PendingEventType::Cancel,
+                    ScheduledEventTypeEnum::ApplyAmendment => PendingEventType::Amendment,
                     _ => return None,
                 };
+                let customer_cancellable = e.customer_initiated;
+                let amendment_summary = e.amendment_summary.map(|s| sub_proto::AmendmentSummary {
+                    added_component_names: s.added_component_names,
+                    removed_component_names: s.removed_component_names,
+                    added_add_on_names: s.added_add_on_names,
+                    removed_add_on_names: s.removed_add_on_names,
+                });
                 Some(PendingEvent {
                     id: e.id.as_proto(),
                     event_type: event_type.into(),
                     scheduled_date: e.scheduled_date.as_proto(),
                     new_plan_name: e.new_plan_name,
                     cancel_reason: e.cancel_reason,
+                    customer_cancellable,
+                    amendment_summary,
                 })
             }),
+            online_payment_enabled,
         };
 
         Ok(Response::new(GetSubscriptionDetailsResponse {
@@ -542,6 +556,7 @@ impl PortalSubscriptionService for PortalSubscriptionServiceComponents {
                     let result = self
                         .services
                         .apply_plan_change_immediate(
+                            common_domain::actor::Actor::Customer { id: customer_id },
                             subscription_id,
                             tenant_id,
                             new_plan_version_id,
@@ -565,7 +580,13 @@ impl PortalSubscriptionService for PortalSubscriptionServiceComponents {
             DomainChangeDirection::Downgrade | DomainChangeDirection::Lateral => {
                 let event = self
                     .services
-                    .schedule_plan_change(subscription_id, tenant_id, new_plan_version_id, vec![])
+                    .schedule_plan_change(
+                        common_domain::actor::Actor::Customer { id: customer_id },
+                        subscription_id,
+                        tenant_id,
+                        new_plan_version_id,
+                        vec![],
+                    )
                     .await
                     .map_err(Into::<PortalSubscriptionApiError>::into)?;
 
@@ -605,7 +626,12 @@ impl PortalSubscriptionService for PortalSubscriptionServiceComponents {
         }
 
         self.services
-            .cancel_scheduled_event(event_id, subscription_id, tenant_id)
+            .cancel_scheduled_event(
+                common_domain::actor::Actor::Customer { id: customer_id },
+                event_id,
+                subscription_id,
+                tenant_id,
+            )
             .await
             .map_err(Into::<PortalSubscriptionApiError>::into)?;
 
@@ -734,7 +760,6 @@ impl PortalSubscriptionService for PortalSubscriptionServiceComponents {
                         name: addon.name.clone(),
                         description: None,
                         created_at: addon.created_at,
-                        created_by: uuid::Uuid::nil(),
                         updated_at: None,
                         archived_at: None,
                         tenant_id: addon.tenant_id,
@@ -894,8 +919,14 @@ impl PortalSubscriptionService for PortalSubscriptionServiceComponents {
             )
             .await
         } else {
-            self.add_addon_directly(tenant_id, subscription_id, &addon)
-                .await
+            // Without an online payment method configured, self-service add-on
+            // purchases are gated: the customer must go through their account manager.
+            Err(PortalSubscriptionApiError::FailedPrecondition(
+                "Self-service add-on purchase is unavailable for this subscription. \
+                 Please contact your account manager."
+                    .to_string(),
+            )
+            .into())
         }
     }
 
@@ -921,9 +952,15 @@ impl PortalSubscriptionService for PortalSubscriptionServiceComponents {
             return Err(PortalSubscriptionApiError::Unauthorized.into());
         }
 
+        let period = crate::api::shared::usage::resolve_usage_period(
+            inner.start_date.as_ref(),
+            inner.end_date.as_ref(),
+            &details.subscription,
+        )?;
+
         let usage = self
             .services
-            .get_subscription_component_usage(&details, metric_id)
+            .get_subscription_component_usage(&details, metric_id, period)
             .await
             .map_err(Into::<PortalSubscriptionApiError>::into)?;
 
@@ -938,8 +975,8 @@ impl PortalSubscriptionService for PortalSubscriptionServiceComponents {
                     dimensions: point.dimensions,
                 })
                 .collect(),
-            period_start: usage.period.start.to_string(),
-            period_end: usage.period.end.to_string(),
+            period_start: usage.period.start.as_proto(),
+            period_end: usage.period.end.as_proto(),
         }))
     }
 }
@@ -982,7 +1019,6 @@ impl PortalSubscriptionServiceComponents {
             tenant_id,
             customer_id: details.subscription.customer_id,
             plan_version_id: details.subscription.plan_version_id,
-            created_by: details.subscription.created_by,
             billing_start_date: None,
             billing_day_anchor: None,
             net_terms: None,
@@ -1032,6 +1068,9 @@ impl PortalSubscriptionServiceComponents {
     }
 
     /// Directly adds an add-on to a subscription (no payment required).
+    /// Retained for potential admin/internal flows; self-service portal purchases
+    /// are gated behind an online payment method (see `purchase_add_on`).
+    #[allow(dead_code)]
     async fn add_addon_directly(
         &self,
         tenant_id: common_domain::ids::TenantId,
@@ -1058,7 +1097,6 @@ impl PortalSubscriptionServiceComponents {
                     name: addon.name.clone(),
                     description: None,
                     created_at: addon.created_at,
-                    created_by: uuid::Uuid::nil(),
                     updated_at: None,
                     archived_at: None,
                     tenant_id: addon.tenant_id,
@@ -1086,6 +1124,7 @@ impl PortalSubscriptionServiceComponents {
                 product_id: Some(addon.product_id),
                 price_id: resolved.price_id,
                 quantity: 1,
+                effective_from: chrono::Utc::now().naive_utc().date(),
             },
         };
 
@@ -1117,7 +1156,6 @@ impl PortalSubscriptionServiceComponents {
                 subscription_id,
                 new_plan_version_id,
                 details.subscription.customer_id,
-                details.subscription.created_by,
                 details.subscription.payment_methods_config.clone(),
                 chrono::Utc::now().date_naive(),
             )

@@ -1,8 +1,4 @@
-import {
-  createConnectQueryKey,
-  createProtobufSafeUpdater,
-  useMutation,
-} from '@connectrpc/connect-query'
+import { createConnectQueryKey, useMutation } from '@connectrpc/connect-query';
 import { Button, Flex, Form, InputFormField, SelectFormField, SelectItem } from '@md/ui'
 import { useQueryClient } from '@tanstack/react-query'
 import { z } from 'zod'
@@ -23,15 +19,12 @@ export const UserOnboardingForm = () => {
   const onboardMeMut = useMutation(onboardMe, {
     onSuccess: async res => {
       if (res.user) {
-        queryClient.setQueryData(
-          createConnectQueryKey(me),
-          createProtobufSafeUpdater(me, prev => {
-            return {
-              ...prev,
-              user: res.user,
-            }
+        queryClient.invalidateQueries({
+          queryKey: createConnectQueryKey({
+            schema: me,
+            cardinality: undefined
           })
-        )
+        })
       }
     },
   })
@@ -103,7 +96,7 @@ export const UserOnboardingForm = () => {
             <SelectItem value="other">Other</SelectItem>
           </SelectFormField>
 
-          <div className="flex-grow"></div>
+          <div className="grow"></div>
 
           <Button
             variant="primary"

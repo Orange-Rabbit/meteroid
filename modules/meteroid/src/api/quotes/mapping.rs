@@ -6,13 +6,13 @@ pub mod quotes {
         subscription_fee_billing_period_to_grpc, subscription_fee_to_grpc,
     };
     use meteroid_grpc::meteroid::api::quotes::v1::{
-        DetailedQuote, Quote, QuoteActivity, QuoteComponent, QuoteSignature, QuoteStatus,
-        RecipientDetails,
+        DetailedQuote, Quote, QuoteComponent, QuoteSignature, QuoteStatus, RecipientDetails,
     };
     use meteroid_grpc::meteroid::api::subscriptions::v1 as sub_proto;
     use meteroid_grpc::meteroid::api::subscriptions::v1::ActivationCondition;
     use meteroid_store::domain;
     use meteroid_store::domain::subscriptions::PaymentMethodsConfig;
+    use meteroid_store::services::invoice_lines::fees::compute_usage_price;
 
     fn status_domain_to_server(value: domain::enums::QuoteStatusEnum) -> QuoteStatus {
         match value {
@@ -84,7 +84,18 @@ pub mod quotes {
 
     pub(crate) fn quote_component_to_proto(
         component: &domain::quotes::QuotePriceComponent,
+        currency: &str,
     ) -> QuoteComponent {
+        let example_usage_amount = match (&component.fee, component.example_usage_quantity) {
+            (domain::SubscriptionFee::Usage { model, .. }, Some(qty)) => {
+                compute_usage_price(model, qty, currency)
+                    .ok()
+                    .flatten()
+                    .map(|a| a.normalize().to_string())
+            }
+            _ => None,
+        };
+
         QuoteComponent {
             id: component.id.as_proto(),
             name: component.name.clone(),
@@ -96,6 +107,8 @@ pub mod quotes {
                 component.period.as_billing_period_opt().unwrap_or_default(),
             )),
             is_override: component.is_override,
+            example_usage_quantity: component.example_usage_quantity.map(|q| q.to_string()),
+            example_usage_amount,
         }
     }
 
@@ -113,21 +126,6 @@ pub mod quotes {
             user_agent: signature.user_agent.clone(),
             verification_token: signature.verification_token.clone(),
             verified_at: signature.verified_at.as_proto(),
-        }
-    }
-
-    fn quote_activity_to_proto(activity: &domain::quotes::QuoteActivity) -> QuoteActivity {
-        QuoteActivity {
-            id: activity.id.as_proto(),
-            quote_id: activity.quote_id.as_proto(),
-            activity_type: activity.activity_type.clone(),
-            description: activity.description.clone(),
-            actor_type: activity.actor_type.clone(),
-            actor_id: activity.actor_id.clone(),
-            actor_name: activity.actor_name.clone(),
-            created_at: activity.created_at.as_proto(),
-            ip_address: activity.ip_address.clone(),
-            user_agent: activity.user_agent.clone(),
         }
     }
 
@@ -204,7 +202,6 @@ pub mod quotes {
         let add_ons = &detailed_quote.add_ons;
         let coupons = &detailed_quote.coupons;
         let signatures = &detailed_quote.signatures;
-        let activities = &detailed_quote.activities;
 
         let customer_server: ServerCustomerWrapper =
             detailed_quote.customer.clone().try_into().unwrap();
@@ -221,11 +218,13 @@ pub mod quotes {
                 ),
             ),
             customer: Some(customer_server.0),
-            components: components.iter().map(quote_component_to_proto).collect(),
+            components: components
+                .iter()
+                .map(|c| quote_component_to_proto(c, &quote.currency))
+                .collect(),
             add_ons: add_ons.iter().map(quote_add_on_to_proto).collect(),
             coupons: coupons.iter().map(quote_coupon_to_proto).collect(),
             signatures: signatures.iter().map(quote_signature_to_proto).collect(),
-            activities: activities.iter().map(quote_activity_to_proto).collect(),
         }
     }
 

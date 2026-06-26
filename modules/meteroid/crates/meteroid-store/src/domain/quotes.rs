@@ -11,14 +11,14 @@ use crate::json_value_serde;
 use common_domain::ids::BaseId;
 use common_domain::ids::{
     AddOnId, CouponId, CustomerId, InvoiceId, PlanVersionId, PriceComponentId, PriceId, ProductId,
-    QuoteActivityId, QuoteAddOnId, QuoteCouponId, QuoteId, QuotePriceComponentId, QuoteSignatureId,
+    QuoteAddOnId, QuoteCouponId, QuoteId, QuotePriceComponentId, QuoteSignatureId,
     StoredDocumentId, SubscriptionId, TenantId,
 };
 use diesel_models::quote_add_ons::{QuoteAddOnRow, QuoteAddOnRowNew};
 use diesel_models::quote_coupons::{QuoteCouponRow, QuoteCouponRowNew};
 use diesel_models::quotes::{
-    QuoteActivityRow, QuoteActivityRowNew, QuoteComponentRow, QuoteComponentRowNew, QuoteRow,
-    QuoteRowNew, QuoteSignatureRow, QuoteSignatureRowNew, QuoteWithCustomerRow,
+    QuoteComponentRow, QuoteComponentRowNew, QuoteRow, QuoteRowNew, QuoteSignatureRow,
+    QuoteSignatureRowNew, QuoteWithCustomerRow,
 };
 use o2o::o2o;
 
@@ -128,6 +128,10 @@ pub struct QuoteNew {
     StoreError::SerdeError("Failed to serialize payment_methods_config".to_string(), e)
     })?)]
     pub payment_methods_config: Option<PaymentMethodsConfig>,
+    /// Entitlement specs to create inline when the quote is created.
+    /// Not persisted to `quote_rows` — inserted into the entitlements table instead.
+    #[ghost]
+    pub entitlements: Vec<crate::domain::entitlements::EntitlementSpec>,
 }
 
 #[derive(o2o, Debug, Clone)]
@@ -148,7 +152,7 @@ pub struct DetailedQuote {
     pub add_ons: Vec<QuoteAddOn>,
     pub coupons: Vec<QuoteCoupon>,
     pub signatures: Vec<QuoteSignature>,
-    pub activities: Vec<QuoteActivity>,
+    pub entitlements: Vec<crate::domain::entitlements::Entitlement>,
 }
 
 #[derive(Debug, Clone)]
@@ -162,6 +166,7 @@ pub struct QuotePriceComponent {
     pub fee: SubscriptionFee,
     pub is_override: bool,
     pub price_id: Option<PriceId>,
+    pub example_usage_quantity: Option<Decimal>,
 }
 
 impl TryFrom<QuoteComponentRow> for QuotePriceComponent {
@@ -185,6 +190,7 @@ impl TryFrom<QuoteComponentRow> for QuotePriceComponent {
             fee,
             is_override: row.is_override,
             price_id: row.price_id,
+            example_usage_quantity: row.example_usage_quantity,
         })
     }
 }
@@ -199,6 +205,7 @@ pub struct QuotePriceComponentNew {
     pub fee: SubscriptionFee,
     pub is_override: bool,
     pub price_id: Option<PriceId>,
+    pub example_usage_quantity: Option<Decimal>,
 }
 
 impl TryInto<QuoteComponentRowNew> for QuotePriceComponentNew {
@@ -221,6 +228,7 @@ impl TryInto<QuoteComponentRowNew> for QuotePriceComponentNew {
             legacy_fee,
             is_override: self.is_override,
             price_id: self.price_id,
+            example_usage_quantity: self.example_usage_quantity,
         })
     }
 }
@@ -240,35 +248,6 @@ pub struct QuoteSignature {
     pub user_agent: Option<String>,
     pub verification_token: Option<String>,
     pub verified_at: Option<NaiveDateTime>,
-}
-
-#[derive(o2o, Debug, Clone)]
-#[from_owned(QuoteActivityRow)]
-pub struct QuoteActivity {
-    pub id: QuoteActivityId,
-    pub quote_id: QuoteId,
-    pub activity_type: String,
-    pub description: String,
-    pub actor_type: String,
-    pub actor_id: Option<String>,
-    pub actor_name: Option<String>,
-    pub created_at: NaiveDateTime,
-    pub ip_address: Option<String>,
-    pub user_agent: Option<String>,
-}
-
-#[derive(Debug, Clone, o2o)]
-#[owned_into(QuoteActivityRowNew)]
-#[ghosts(id: {QuoteActivityId::new()})]
-pub struct QuoteActivityNew {
-    pub quote_id: QuoteId,
-    pub activity_type: String,
-    pub description: String,
-    pub actor_type: String,
-    pub actor_id: Option<String>,
-    pub actor_name: Option<String>,
-    pub ip_address: Option<String>,
-    pub user_agent: Option<String>,
 }
 
 #[derive(Debug, Clone, o2o)]

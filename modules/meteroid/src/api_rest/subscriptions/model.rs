@@ -1,4 +1,5 @@
 use crate::api_rest::currencies::model::Currency;
+use crate::api_rest::entitlements::model::Entitlement;
 use crate::api_rest::model::{BillingPeriodEnum, PaginatedRequest, PaginationResponse};
 use chrono::NaiveDate;
 use common_domain::ids::{
@@ -273,6 +274,8 @@ pub struct SubscriptionDetails {
     pub add_ons: Vec<SubscriptionAddOn>,
     pub applied_coupons: Vec<AppliedCouponDetailed>,
     pub checkout_url: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub entitlements: Vec<Entitlement>,
 }
 
 #[derive(ToSchema, Serialize, Deserialize, Validate, Debug)]

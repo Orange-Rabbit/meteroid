@@ -1,14 +1,8 @@
-use chrono::Datelike;
-use opentelemetry::propagation::Injector;
-use secrecy::{ExposeSecret, SecretString};
-use segment::message::{Track, User};
-use segment::{Client, Message};
-use serde_json::Value;
-use uuid::Uuid;
-
 use crate::constants::OSS_API;
+use chrono::Datelike;
 use common_build_info::BuildInfo;
 use common_config::analytics::AnalyticsConfig;
+use common_domain::actor::Actor;
 use common_domain::country::CountryCode;
 use common_eventbus::{
     Event, EventData, EventDataDetails, EventDataWithMetadataDetails, TenantEventDataDetails,
@@ -22,6 +16,11 @@ use meteroid_store::repositories::customers::CustomersInterfaceAuto;
 use meteroid_store::repositories::price_components::PriceComponentInterface;
 use meteroid_store::repositories::subscriptions::SubscriptionInterfaceAuto;
 use meteroid_store::repositories::{InvoiceInterface, PlansInterface};
+use opentelemetry::propagation::Injector;
+use secrecy::{ExposeSecret, SecretString};
+use segment::message::{Track, User};
+use segment::{Client, Message};
+use serde_json::Value;
 
 pub struct AnalyticsHandler {
     store: Store,
@@ -55,19 +54,18 @@ impl AnalyticsHandler {
         }
     }
 
-    fn actor_as_user(actor: Option<Uuid>) -> User {
-        if let Some(ref actor) = actor {
-            User::UserId {
-                user_id: actor.clone().as_hyphenated().to_string(),
-            }
-        } else {
-            User::AnonymousId {
+    fn actor_as_user(actor: Option<&Actor>) -> User {
+        match actor.and_then(|a| a.as_uuid()) {
+            Some(uuid) => User::UserId {
+                user_id: uuid.as_hyphenated().to_string(),
+            },
+            None => User::AnonymousId {
                 anonymous_id: "unknown".to_string(),
-            }
+            },
         }
     }
 
-    async fn send_track(&self, event_name: String, actor: Option<Uuid>, properties: Value) {
+    async fn send_track(&self, event_name: String, actor: Option<&Actor>, properties: Value) {
         self.client
             .send(
                 self.api_key.expose_secret().to_string(),
@@ -91,7 +89,7 @@ impl AnalyticsHandler {
     ) -> Result<(), EventBusError> {
         self.send_track(
             "api-token-created".to_string(),
-            event.actor,
+            event.actor.as_ref(),
             serde_json::json!({
                 "api_token_id": event_data_details.entity_id,
                 "tenant_id": event_data_details.tenant_id,
@@ -110,7 +108,7 @@ impl AnalyticsHandler {
     ) -> Result<(), EventBusError> {
         self.send_track(
             "api-token-revoked".to_string(),
-            event.actor,
+            event.actor.as_ref(),
             serde_json::json!({
                 "api_token_id": event_data_details.entity_id,
                 "tenant_id": event_data_details.tenant_id,
@@ -131,14 +129,14 @@ impl AnalyticsHandler {
             .store
             .find_billable_metric_by_id(
                 event_data_details.entity_id.into(),
-                event_data_details.tenant_id.into(),
+                event_data_details.tenant_id,
             )
             .await
             .map_err(|e| EventBusError::EventHandlerFailed(e.to_string()))?;
 
         self.send_track(
             "billable-metric-created".to_string(),
-            event.actor,
+            event.actor.as_ref(),
             serde_json::json!({
                 "billable_metric_id": event_data_details.entity_id,
                 "tenant_id": event_data_details.tenant_id,
@@ -160,14 +158,14 @@ impl AnalyticsHandler {
             .store
             .find_customer_by_id(
                 event_data_details.entity_id.into(),
-                event_data_details.tenant_id.into(),
+                event_data_details.tenant_id,
             )
             .await
             .map_err(|e| EventBusError::EventHandlerFailed(e.to_string()))?;
 
         self.send_track(
             "customer-created".to_string(),
-            event.actor,
+            event.actor.as_ref(),
             serde_json::json!({
                 "customer_id": customer.id,
             }),
@@ -187,14 +185,14 @@ impl AnalyticsHandler {
             .store
             .find_customer_by_id(
                 event_data_details.entity_id.into(),
-                event_data_details.tenant_id.into(),
+                event_data_details.tenant_id,
             )
             .await
             .map_err(|e| EventBusError::EventHandlerFailed(e.to_string()))?;
 
         self.send_track(
             "customer-patched".to_string(),
-            event.actor,
+            event.actor.as_ref(),
             serde_json::json!({
                 "customer_id": customer.id,
                 "tenant_id": event_data_details.tenant_id,
@@ -215,14 +213,14 @@ impl AnalyticsHandler {
             .store
             .find_customer_by_id(
                 event_data_details.entity_id.into(),
-                event_data_details.tenant_id.into(),
+                event_data_details.tenant_id,
             )
             .await
             .map_err(|e| EventBusError::EventHandlerFailed(e.to_string()))?;
 
         self.send_track(
             "customer-updated".to_string(),
-            event.actor,
+            event.actor.as_ref(),
             serde_json::json!({
                 "customer_id": customer.id,
                 "tenant_id": event_data_details.tenant_id,
@@ -241,7 +239,7 @@ impl AnalyticsHandler {
     ) -> Result<(), EventBusError> {
         self.send_track(
             "instance-inited".to_string(),
-            event.actor,
+            event.actor.as_ref(),
             serde_json::json!({
                 "organization_id": event_data_details.entity_id,
             }),
@@ -262,7 +260,7 @@ impl AnalyticsHandler {
         } = self
             .store
             .get_detailed_invoice_by_id(
-                event_data_details.tenant_id.into(),
+                event_data_details.tenant_id,
                 event_data_details.entity_id.into(),
             )
             .await
@@ -270,7 +268,7 @@ impl AnalyticsHandler {
 
         self.send_track(
             "invoice-draft".to_string(),
-            event.actor,
+            event.actor.as_ref(),
             serde_json::json!({
                 "invoice_id": invoice.id,
                 "customer_id": customer.id,
@@ -294,7 +292,7 @@ impl AnalyticsHandler {
         } = self
             .store
             .get_detailed_invoice_by_id(
-                event_data_details.tenant_id.into(),
+                event_data_details.tenant_id,
                 event_data_details.entity_id.into(),
             )
             .await
@@ -302,7 +300,7 @@ impl AnalyticsHandler {
 
         self.send_track(
             "invoice-finalized".to_string(),
-            event.actor,
+            event.actor.as_ref(),
             serde_json::json!({
                 "invoice_id": invoice.id,
                 "customer_id": customer.id,
@@ -325,14 +323,14 @@ impl AnalyticsHandler {
             .store
             .get_plan_version_by_id(
                 event_data_details.entity_id.into(),
-                event_data_details.tenant_id.into(),
+                event_data_details.tenant_id,
             )
             .await
             .map_err(|e| EventBusError::EventHandlerFailed(e.to_string()))?;
 
         self.send_track(
             "plan-created-draft".to_string(),
-            event.actor,
+            event.actor.as_ref(),
             serde_json::json!({
                 "plan_version_id": plan_version.id,
                 "plan_id": plan_version.plan_id,
@@ -355,14 +353,14 @@ impl AnalyticsHandler {
             .store
             .get_plan_version_by_id(
                 event_data_details.entity_id.into(),
-                event_data_details.tenant_id.into(),
+                event_data_details.tenant_id,
             )
             .await
             .map_err(|e| EventBusError::EventHandlerFailed(e.to_string()))?;
 
         self.send_track(
             "plan-published-version".to_string(),
-            event.actor,
+            event.actor.as_ref(),
             serde_json::json!({
                 "plan_version_id": plan_version.id,
                 "plan_id": plan_version.plan_id,
@@ -383,7 +381,7 @@ impl AnalyticsHandler {
     ) -> Result<(), EventBusError> {
         self.send_track(
             "plan-discarded-version".to_string(),
-            event.actor,
+            event.actor.as_ref(),
             serde_json::json!({
                 "plan_version_id": event_data_details.entity_id,
                 "tenant_id": event_data_details.tenant_id,
@@ -403,7 +401,7 @@ impl AnalyticsHandler {
         let price_component = self
             .store
             .get_price_component_by_id(
-                event_data_details.tenant_id.into(),
+                event_data_details.tenant_id,
                 event_data_details.entity_id.into(),
             )
             .await
@@ -411,7 +409,7 @@ impl AnalyticsHandler {
 
         self.send_track(
             "price-component-created".to_string(),
-            event.actor,
+            event.actor.as_ref(),
             serde_json::json!({
                 "price_component_id": price_component.id,
                 "tenant_id": event_data_details.tenant_id,
@@ -431,7 +429,7 @@ impl AnalyticsHandler {
         let price_component = self
             .store
             .get_price_component_by_id(
-                event_data_details.tenant_id.into(),
+                event_data_details.tenant_id,
                 event_data_details.entity_id.into(),
             )
             .await
@@ -439,7 +437,7 @@ impl AnalyticsHandler {
 
         self.send_track(
             "price-component-edited".to_string(),
-            event.actor,
+            event.actor.as_ref(),
             serde_json::json!({
                 "price_component_id": price_component.id,
                 "tenant_id": event_data_details.tenant_id,
@@ -458,7 +456,7 @@ impl AnalyticsHandler {
     ) -> Result<(), EventBusError> {
         self.send_track(
             "price-component-removed".to_string(),
-            event.actor,
+            event.actor.as_ref(),
             serde_json::json!({
                 "price_component_id": event_data_details.entity_id,
                 "tenant_id": event_data_details.tenant_id,
@@ -477,7 +475,7 @@ impl AnalyticsHandler {
     ) -> Result<(), EventBusError> {
         self.send_track(
             "product-family-created".to_string(),
-            event.actor,
+            event.actor.as_ref(),
             serde_json::json!({
                 "product_family_id": event_data_details.entity_id,
                 "tenant_id": event_data_details.tenant_id,
@@ -497,7 +495,7 @@ impl AnalyticsHandler {
         let subscription = self
             .store
             .get_subscription_details(
-                event_data_details.tenant_id.into(),
+                event_data_details.tenant_id,
                 event_data_details.entity_id.into(),
             )
             .await
@@ -506,7 +504,7 @@ impl AnalyticsHandler {
 
         self.send_track(
             "subscription-created".to_string(),
-            event.actor,
+            event.actor.as_ref(),
             serde_json::json!({
                 "subscription_id": subscription.id,
                 "tenant_id": subscription.tenant_id,
@@ -529,7 +527,7 @@ impl AnalyticsHandler {
         let subscription = self
             .store
             .get_subscription_details(
-                event_data_details.tenant_id.into(),
+                event_data_details.tenant_id,
                 event_data_details.entity_id.into(),
             )
             .await
@@ -549,7 +547,7 @@ impl AnalyticsHandler {
 
         self.send_track(
             "subscription-canceled".to_string(),
-            event.actor,
+            event.actor.as_ref(),
             serde_json::json!({
                 "subscription_id": subscription.id,
                 "tenant_id": subscription.tenant_id,
@@ -572,7 +570,7 @@ impl AnalyticsHandler {
     ) -> Result<(), EventBusError> {
         self.send_track(
             "user-created".to_string(),
-            event.actor,
+            event.actor.as_ref(),
             serde_json::json!({
                 "user_id": event_data_details.entity_id,
             }),
@@ -593,7 +591,7 @@ impl AnalyticsHandler {
 
         self.send_track(
             "user-updated".to_string(),
-            event.actor,
+            event.actor.as_ref(),
             serde_json::json!(properties),
         )
         .await;

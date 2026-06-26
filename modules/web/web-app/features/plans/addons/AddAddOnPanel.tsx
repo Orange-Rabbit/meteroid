@@ -1,4 +1,4 @@
-import { disableQuery, useMutation } from '@connectrpc/connect-query'
+import { createConnectQueryKey, skipToken, useMutation } from '@connectrpc/connect-query';
 import {
   Badge,
   Button,
@@ -82,6 +82,7 @@ export const AddAddOnPanel = () => {
   const [customName, setCustomName] = useState('')
   const [customDescription, setCustomDescription] = useState('')
   const [selectedFeeType, setSelectedFeeType] = useState<ComponentFeeType | null>(null)
+
   const [catalogSearch, setCatalogSearch] = useState('')
   const debouncedSearch = useDebounceValue(catalogSearch, 300)
 
@@ -102,7 +103,7 @@ export const AddAddOnPanel = () => {
     listAddOns,
     version?.id
       ? { planVersionId: version.id, pagination: { perPage: 100, page: 0 } }
-      : disableQuery
+      : skipToken
   )
 
   const attachedIds = new Set(planAddOns.data?.addOns?.map(a => a.id) ?? [])
@@ -110,7 +111,10 @@ export const AddAddOnPanel = () => {
   const attachMutation = useMutation(attachAddOnToPlanVersion, {
     onSuccess: () => {
       queryClient.invalidateQueries({
-        queryKey: [listAddOns.service.typeName],
+        queryKey: createConnectQueryKey({
+          schema: listAddOns.parent,
+          cardinality: undefined
+        }),
       })
       navigate('..')
     },
@@ -169,11 +173,12 @@ export const AddAddOnPanel = () => {
       product,
       price: wrapAsNewPriceEntries(priceInputs)[0],
       productFamilyLocalId,
+      entitlements: [],
     })
   }
 
   const handleCreateNewProduct = (formData: Record<string, unknown>) => {
-    if (!version?.id || !selectedFeeType) return
+    if (!selectedFeeType) return
 
     const pricingType = toPricingTypeFromFeeType(
       selectedFeeType,
@@ -188,6 +193,7 @@ export const AddAddOnPanel = () => {
       product,
       price: wrapAsNewPriceEntries(priceInputs)[0],
       productFamilyLocalId,
+      entitlements: [],
     })
   }
 
@@ -276,8 +282,8 @@ export const AddAddOnPanel = () => {
                 }}
                 onBack={step => setCustomStep(step)}
                 onSubmit={handleCreateNewProduct}
-                submitLabel="Create & Attach"
                 feeTypeOptions={ADDON_FEE_TYPE_OPTIONS}
+                isSubmitting={createAddOnMutation.isPending}
               />
             </ScrollArea>
           </TabsContent>

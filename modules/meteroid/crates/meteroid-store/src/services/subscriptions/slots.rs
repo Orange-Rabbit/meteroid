@@ -2,6 +2,7 @@
 
 use crate::StoreResult;
 use crate::constants::Currencies;
+use crate::domain::entity_activity::Actor;
 use crate::domain::slot_transactions::{
     SlotUpdatePreview, SlotUpgradeBillingMode, UpdateSlotsResult,
 };
@@ -23,10 +24,10 @@ use crate::utils::local_id::LocalId;
 use chrono::{NaiveDateTime, NaiveTime};
 use common_domain::ids::{InvoiceId, PriceComponentId, SubscriptionId, TenantId};
 use common_utils::decimals::ToSubunit;
-use diesel_async::scoped_futures::ScopedFutureExt;
 use error_stack::{ResultExt, bail};
 use rust_decimal::Decimal;
 use rust_decimal::prelude::FromPrimitive;
+use scoped_futures::ScopedFutureExt;
 
 impl Services {
     /// Upgrades (delta > 0): Behavior depends on billing_mode (OnCheckout/OnInvoicePaid/Optimistic)
@@ -565,13 +566,21 @@ impl Services {
             manual: false,
             invoicing_entity_id: subscription.invoicing_entity_id,
             parent_invoice_id: None,
+            consolidated_into_invoice_id: None,
         };
 
         let draft_invoice = insert_invoice_tx(&self.store, conn, invoice_new).await?;
 
         if respect_auto_advance && subscription.auto_advance_invoices {
-            self.finalize_invoice_tx(conn, draft_invoice.id, tenant_id, false, &None)
-                .await?;
+            self.finalize_invoice_tx(
+                conn,
+                &Actor::System,
+                draft_invoice.id,
+                tenant_id,
+                false,
+                &None,
+            )
+            .await?;
         }
 
         Ok(draft_invoice.id)
@@ -713,7 +722,7 @@ impl Services {
         payment_method_id: common_domain::ids::CustomerPaymentMethodId,
         at_ts: Option<chrono::NaiveDateTime>,
     ) -> StoreResult<(PaymentTransaction, i32)> {
-        use diesel_async::scoped_futures::ScopedFutureExt;
+        use scoped_futures::ScopedFutureExt;
 
         if delta <= 0 {
             return Err(StoreError::InvalidArgument(
@@ -813,8 +822,15 @@ impl Services {
                         let new_slot_count =
                             slot_transaction.prev_active_slots + slot_transaction.delta;
 
-                        self.finalize_invoice_tx(conn, invoice_id, tenant_id, false, &None)
-                            .await?;
+                        self.finalize_invoice_tx(
+                            conn,
+                            &Actor::System,
+                            invoice_id,
+                            tenant_id,
+                            false,
+                            &None,
+                        )
+                        .await?;
 
                         Ok((payment_result, new_slot_count))
                     } else {

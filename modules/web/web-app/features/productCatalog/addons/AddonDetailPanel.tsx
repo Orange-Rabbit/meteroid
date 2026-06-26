@@ -1,4 +1,4 @@
-import { disableQuery, useMutation } from '@connectrpc/connect-query'
+import { createConnectQueryKey, skipToken, useMutation } from '@connectrpc/connect-query';
 import {
   Badge,
   Button,
@@ -14,6 +14,7 @@ import { PencilIcon, Trash2Icon } from 'lucide-react'
 import { useNavigate, useParams } from 'react-router-dom'
 
 import { LocalId } from '@/components/LocalId'
+import { EntityActivityTimeline } from '@/features/activity/EntityActivityTimeline'
 import { feeTypeEnumToComponentFeeType } from '@/features/plans/addons/AddOnCard'
 import { PricingDetailsView } from '@/features/plans/pricecomponents/components/PricingDetailsView'
 import {
@@ -21,6 +22,7 @@ import {
   feeTypeToHuman,
 } from '@/features/plans/pricecomponents/utils'
 import { useQuery } from '@/lib/connectrpc'
+import { env } from '@/lib/env'
 import { formatCadence } from '@/lib/mapping/prices'
 import {
   getAddOn,
@@ -28,6 +30,8 @@ import {
   removeAddOn,
 } from '@/rpc/api/addons/v1/addons-AddOnsService_connectquery'
 import { useConfirmationModal } from 'providers/ConfirmationProvider'
+
+import { AddonEntitlementsSection } from './AddonEntitlementsSection'
 
 export const AddonDetailPanel = () => {
   const navigate = useNavigate()
@@ -37,13 +41,16 @@ export const AddonDetailPanel = () => {
 
   const addonQuery = useQuery(
     getAddOn,
-    addonId ? { addOnId: addonId } : disableQuery
+    addonId ? { addOnId: addonId } : skipToken
   )
 
   const removeMutation = useMutation(removeAddOn, {
     onSuccess: () => {
       queryClient.invalidateQueries({
-        queryKey: [listAddOns.service.typeName],
+        queryKey: createConnectQueryKey({
+          schema: listAddOns.parent,
+          cardinality: undefined
+        }),
       })
       navigate('..')
     },
@@ -141,6 +148,13 @@ export const AddonDetailPanel = () => {
 
             <Separator />
 
+            {env.entitlementsEnabled && addonId && (
+              <>
+                <AddonEntitlementsSection addonId={addOn.id} />
+                <Separator />
+              </>
+            )}
+
             <section className="flex flex-col gap-3">
               <h3 className="text-sm font-medium text-muted-foreground">Settings</h3>
               <div className="flex flex-col gap-2">
@@ -155,6 +169,17 @@ export const AddonDetailPanel = () => {
                   </span>
                 </DetailRow>
               </div>
+            </section>
+
+            <Separator />
+
+            <section className="flex flex-col gap-3">
+              <h3 className="text-sm font-medium text-muted-foreground">Activity</h3>
+              <EntityActivityTimeline
+                entityType="add_on"
+                entityId={addOn.id}
+                emptyLabel="No activity yet for this add-on"
+              />
             </section>
           </div>
         )}

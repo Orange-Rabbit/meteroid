@@ -1,4 +1,4 @@
-import { disableQuery, useMutation } from '@connectrpc/connect-query'
+import { createConnectQueryKey, skipToken, useMutation } from '@connectrpc/connect-query';
 import {
   Input,
   Label,
@@ -34,11 +34,14 @@ import {
   wrapAsNewPriceEntries,
 } from '@/features/pricing/conversions'
 import { useQuery } from '@/lib/connectrpc'
+import { env } from '@/lib/env'
 import {
   editAddOn,
   getAddOn,
   listAddOns,
 } from '@/rpc/api/addons/v1/addons-AddOnsService_connectquery'
+
+import { AddonEntitlementsSection } from './AddonEntitlementsSection'
 
 import type { ComponentFeeType } from '@/features/pricing/conversions'
 
@@ -56,7 +59,7 @@ export const AddonEditPanel = () => {
   const switchId = useId()
   const { addonId } = useParams<{ addonId: string }>()
 
-  const addonQuery = useQuery(getAddOn, addonId ? { addOnId: addonId } : disableQuery)
+  const addonQuery = useQuery(getAddOn, addonId ? { addOnId: addonId } : skipToken)
   const addOn = addonQuery.data?.addOn
   const isLoading = addonQuery.isLoading
 
@@ -81,16 +84,23 @@ export const AddonEditPanel = () => {
     }
   }, [addOn, initialized])
 
+  // -1 is the backend sentinel for "unlimited" (removes the cap).
   const maxInstancesPerSubscription =
-    instanceMode === 'single' ? 1 : instanceMode === 'multiple' ? multipleMax : undefined
+    instanceMode === 'single' ? 1 : instanceMode === 'multiple' ? multipleMax : -1
 
   const editAddOnMutation = useMutation(editAddOn, {
     onSuccess: () => {
       queryClient.invalidateQueries({
-        queryKey: [listAddOns.service.typeName],
+        queryKey: createConnectQueryKey({
+          schema: listAddOns.parent,
+          cardinality: undefined
+        }),
       })
       queryClient.invalidateQueries({
-        queryKey: [getAddOn.service.typeName],
+        queryKey: createConnectQueryKey({
+          schema: getAddOn.parent,
+          cardinality: undefined
+        }),
       })
       navigate('..')
     },
@@ -229,7 +239,14 @@ export const AddonEditPanel = () => {
               </div>
             </div>
 
-            <Separator className="my-4" />
+            {env.entitlementsEnabled && addonId && (
+              <>
+                <div className="pb-4">
+                  <AddonEntitlementsSection addonId={addonId} />
+                </div>
+                <Separator className="my-4" />
+              </>
+            )}
 
             {componentFeeType && currency && (
               <div className="pb-4">

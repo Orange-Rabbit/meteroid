@@ -1,6 +1,7 @@
 use crate::api::addons::AddOnsServiceComponents;
 use crate::api::addons::error::AddOnApiError;
 use crate::api::addons::mapping::addons::{AddOnWrapper, PlanVersionAddOnWrapper};
+use crate::api::entitlements::mapping::entitlement_spec_from_proto;
 use crate::api::pricecomponents::mapping::components::{
     price_entries_from_proto, product_ref_from_proto,
 };
@@ -75,7 +76,6 @@ impl AddOnsService for AddOnsServiceComponents {
         &self,
         request: Request<CreateAddOnRequest>,
     ) -> Result<Response<CreateAddOnResponse>, Status> {
-        let actor = request.actor()?;
         let tenant_id = request.tenant()?;
         let req = request.into_inner();
 
@@ -97,6 +97,12 @@ impl AddOnsService for AddOnsServiceComponents {
             }
         };
 
+        let entitlements = req
+            .entitlements
+            .into_iter()
+            .map(entitlement_spec_from_proto)
+            .collect::<Result<Vec<_>, _>>()?;
+
         let added = self
             .store
             .create_add_on_from_ref(
@@ -107,8 +113,8 @@ impl AddOnsService for AddOnsServiceComponents {
                 req.self_serviceable,
                 req.max_instances_per_subscription,
                 tenant_id,
-                actor,
                 pf_id,
+                entitlements,
             )
             .await
             .map(|x| AddOnWrapper::from(x).0)
@@ -147,12 +153,13 @@ impl AddOnsService for AddOnsServiceComponents {
         request: Request<RemoveAddOnRequest>,
     ) -> Result<Response<RemoveAddOnResponse>, Status> {
         let tenant_id = request.tenant()?;
+        let actor = request.actor_typed()?;
         let req = request.into_inner();
 
         let add_on_id = AddOnId::from_proto(&req.add_on_id)?;
 
         self.store
-            .archive_add_on(add_on_id, tenant_id)
+            .archive_add_on(actor, add_on_id, tenant_id)
             .await
             .map_err(Into::<AddOnApiError>::into)?;
 
@@ -164,7 +171,7 @@ impl AddOnsService for AddOnsServiceComponents {
         &self,
         request: Request<EditAddOnRequest>,
     ) -> Result<Response<EditAddOnResponse>, Status> {
-        let actor = request.actor()?;
+        let actor_typed = request.actor_typed()?;
         let tenant_id = request.tenant()?;
         let req = request.into_inner();
 
@@ -189,12 +196,16 @@ impl AddOnsService for AddOnsServiceComponents {
             name,
             description: req.description.map(Some),
             self_serviceable: req.self_serviceable,
-            max_instances_per_subscription: req.max_instances_per_subscription.map(Some),
+            // -1 is the sentinel for "unlimited" (removes the cap).
+            // None (absent field) means "don't change".
+            max_instances_per_subscription: req
+                .max_instances_per_subscription
+                .map(|v| if v == -1 { None } else { Some(v) }),
         };
 
         let edited = self
             .store
-            .update_add_on(patch, price_entry, actor)
+            .update_add_on(actor_typed, patch, price_entry)
             .await
             .map(|x| AddOnWrapper::from(x).0)
             .map_err(Into::<AddOnApiError>::into)?;

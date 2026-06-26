@@ -3,7 +3,6 @@ use sealed::sealed;
 use std::error::Error;
 use std::fmt::{Debug, Display};
 use std::ops::Deref;
-use std::str::FromStr;
 use uuid::Uuid;
 
 mod alias_or;
@@ -12,13 +11,15 @@ mod macros;
 pub use alias_or::AliasOr;
 
 id_type!(OrganizationId, "org_");
+id_type!(OrganizationInviteId, "org_inv_");
 id_type!(TenantId, "ten_");
+id_type!(UserId, "usr_");
+id_type!(ApiTokenId, "tkn_");
 id_type!(CustomerId, "cus_");
 id_type!(SubscriptionId, "sub_");
 id_type!(InvoiceId, "inv_");
 id_type!(QuoteId, "quo_");
 id_type!(QuoteSignatureId, "quo_sig_");
-id_type!(QuoteActivityId, "quo_act_");
 id_type!(QuotePriceComponentId, "quo_price_");
 id_type!(QuoteAddOnId, "quo_add_");
 id_type!(QuoteCouponId, "quo_cou_");
@@ -52,6 +53,9 @@ id_type!(ConnectedAccountId, "cacc_");
 id_type!(OAuthAppId, "app_");
 id_type!(BatchJobId, "bjob_");
 id_type!(BatchJobChunkId, "bjch_");
+id_type!(EntityActivityId, "act_");
+id_type!(FeatureId, "feat_");
+id_type!(EntitlementId, "ent_");
 
 #[derive(Debug)]
 pub struct IdError(pub(crate) String);
@@ -82,6 +86,48 @@ pub trait BaseId: Deref<Target = Uuid> {
     }
 
     fn parse_base62(s: &str) -> Result<Self::IdType, IdError>;
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum EntitlementEntityId {
+    Feature(FeatureId),
+    Plan(PlanId),
+    PlanVersion(PlanVersionId),
+    AddOn(AddOnId),
+    Subscription(SubscriptionId),
+    Quote(QuoteId),
+}
+
+impl EntitlementEntityId {
+    /// Priority ladder used by the entitlement resolver. Higher value wins; ties merge.
+    ///
+    /// `Feature` is the tenant-wide baseline. `PlanVersion` outranks `AddOn` because the
+    /// plan version is the authoritative composition of its linked add-ons — a plan
+    /// version's own grant therefore overrides anything its add-ons contribute.
+    /// `Subscription` and `Quote` share the top rank; they are never both present in the
+    /// same resolution chain (a chain belongs to one customer's subscription *or* one
+    /// quote, never both), so the tie never materialises at runtime.
+    pub fn priority(&self) -> u8 {
+        match self {
+            Self::Feature(_) => 0,
+            Self::Plan(_) => 1,
+            Self::AddOn(_) => 2,
+            Self::PlanVersion(_) => 3,
+            Self::Subscription(_) => 4,
+            Self::Quote(_) => 4,
+        }
+    }
+
+    pub fn as_uuid(&self) -> Uuid {
+        match self {
+            Self::Feature(id) => **id,
+            Self::Plan(id) => **id,
+            Self::PlanVersion(id) => **id,
+            Self::AddOn(id) => **id,
+            Self::Subscription(id) => **id,
+            Self::Quote(id) => **id,
+        }
+    }
 }
 
 pub mod string_serde {

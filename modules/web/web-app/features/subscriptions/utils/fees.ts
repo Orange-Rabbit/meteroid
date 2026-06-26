@@ -1,10 +1,28 @@
-import { PlainMessage } from "@bufbuild/protobuf"
 
-import { SubscriptionFee } from "@/rpc/api/subscriptions/v1/models_pb"
+import { SubscriptionFee, SubscriptionFeeBillingPeriod } from "@/rpc/api/subscriptions/v1/models_pb"
 import { formatCurrencyNoRounding } from "@/utils/numbers"
 
+export const formatSubscriptionFeeBillingPeriod = (
+  period: SubscriptionFeeBillingPeriod
+): string => {
+  switch (period) {
+    case SubscriptionFeeBillingPeriod.ONE_TIME:
+      return 'One Time'
+    case SubscriptionFeeBillingPeriod.MONTHLY:
+      return 'Monthly'
+    case SubscriptionFeeBillingPeriod.QUARTERLY:
+      return 'Quarterly'
+    case SubscriptionFeeBillingPeriod.SEMIANNUAL:
+      return 'Semiannual'
+    case SubscriptionFeeBillingPeriod.YEARLY:
+      return 'Yearly'
+    default:
+      return 'Unknown'
+  }
+}
+
 export const formatSubscriptionFee = (
-  fee: PlainMessage<SubscriptionFee> | undefined,
+  fee: SubscriptionFee | undefined,
   currency: string
 ): {
   type: string
@@ -60,10 +78,12 @@ export const formatSubscriptionFee = (
 
     case 'capacity': {
       const capacityFee = fee.fee.value
+      const hasOverage = parseFloat(capacityFee.overageRate) > 0
       return {
         type: 'Capacity',
-        details: `${capacityFee.included.toString()} included${parseFloat(capacityFee.overageRate) > 0 ? `, then ${formatCurrencyNoRounding(Number(capacityFee.overageRate), currency)} per unit` : ''}`,
+        details: 'Capacity',
         amount: formatCurrencyNoRounding(Number(capacityFee.rate), currency),
+        breakdown: `${capacityFee.included.toString()} included${hasOverage ? `, then ${formatCurrencyNoRounding(Number(capacityFee.overageRate), currency)} per unit` : ''}`,
       }
     }
 
@@ -215,6 +235,7 @@ export const formatSubscriptionFee = (
   }
 }
 
+
 /**
  * Formats a subscription fee directly for table display
  *
@@ -225,9 +246,6 @@ export const formatSubscriptionFeeCompact = (
   fee: SubscriptionFee | undefined,
   currency: string
 ): string => {
-
-  console.log('fee', fee)
-
   if (!fee || !fee.fee.case) {
     return 'N/A'
   }

@@ -1,8 +1,4 @@
-import {
-  createConnectQueryKey,
-  createProtobufSafeUpdater,
-  useMutation,
-} from '@connectrpc/connect-query'
+import { createConnectQueryKey, useMutation } from '@connectrpc/connect-query';
 import { Button } from '@md/ui'
 import { useQueryClient } from '@tanstack/react-query'
 import { useAtom } from 'jotai'
@@ -20,6 +16,7 @@ import {
 import { useQuery } from '@/lib/connectrpc'
 import { formatCadence } from '@/lib/mapping/prices'
 import { getBillableMetric } from '@/rpc/api/billablemetrics/v1/billablemetrics-BillableMetricsService_connectquery'
+import { getResolvedEntitlementsForPlanVersion } from '@/rpc/api/entitlements/v1/entitlements-EntitlementsService_connectquery'
 import {
   listPriceComponents,
   removePriceComponent,
@@ -47,14 +44,16 @@ export const PriceComponentCard: React.FC<{
   const deleteComponentMutation = useMutation(removePriceComponent, {
     onSuccess: () => {
       planWithVersion.version &&
-        queryClient.setQueryData(
-          createConnectQueryKey(listPriceComponents, {
-            planVersionId: planWithVersion.version.id,
-          }),
-          createProtobufSafeUpdater(listPriceComponents, prev => ({
-            components: prev?.components.filter(c => c.id !== component.id) ?? [],
-          }))
-        )
+        queryClient.invalidateQueries({
+          queryKey: createConnectQueryKey({
+            schema: listPriceComponents,
+            cardinality: undefined
+          })
+        })
+      queryClient.invalidateQueries({ queryKey: createConnectQueryKey({
+        schema: getResolvedEntitlementsForPlanVersion.parent,
+        cardinality: undefined
+      }) })
     },
   })
 

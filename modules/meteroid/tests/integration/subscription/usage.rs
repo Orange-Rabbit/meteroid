@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use chrono::NaiveDate;
+use chrono::{NaiveDate, NaiveTime};
 use rust_decimal::Decimal;
 
 use crate::data::ids::*;
@@ -19,7 +19,7 @@ use diesel_models::enums::SubscriptionStatusEnum;
 use meteroid_store::clients::usage::{
     GroupedUsageData, MockUsageClient, MockUsageDataParams, UsageData,
 };
-use meteroid_store::domain::Period;
+use meteroid_store::domain::UsagePeriod;
 use meteroid_store::repositories::subscriptions::CancellationEffectiveAt;
 
 /// Build a MockUsageClient that returns usage data for METRIC_BANDWIDTH.
@@ -29,15 +29,18 @@ fn build_usage_client(usage_units: Decimal, periods: &[(NaiveDate, NaiveDate)]) 
         data.insert(
             MockUsageDataParams {
                 metric_id: METRIC_BANDWIDTH,
-                period_start: start,
-                period_end: end,
+                period_start: start.and_time(NaiveTime::MIN),
+                period_end: end.and_time(NaiveTime::MIN),
             },
             UsageData {
                 data: vec![GroupedUsageData {
                     value: usage_units,
                     dimensions: HashMap::new(),
                 }],
-                period: Period { start, end },
+                period: UsagePeriod {
+                    start: start.and_time(NaiveTime::MIN),
+                    end: end.and_time(NaiveTime::MIN),
+                },
             },
         );
     }
@@ -158,11 +161,11 @@ async fn test_cancel_with_usage_produces_final_arrear_invoice() {
     // Cancel at end of period 1
     env.services()
         .cancel_subscription(
+            common_domain::actor::Actor::System,
             sub_id,
             TENANT_ID,
             Some("testing final arrear invoice".to_string()),
             CancellationEffectiveAt::Date(period2_end),
-            USER_ID,
         )
         .await
         .expect("cancel_subscription failed");

@@ -19,6 +19,7 @@ import { PlanOnboardingComponent } from '@/pages/tenants/billing/plans/onboardin
 import { CatalogOutlet } from '@/pages/tenants/catalog'
 import { CreateBillableMetric } from '@/pages/tenants/catalog/createBillableMetric'
 import { EditBillableMetric } from '@/pages/tenants/catalog/editBillableMetric'
+import { FeatureCreate, FeatureDetail, FeatureEdit, Features } from '@/pages/tenants/catalog/features'
 import { Products } from '@/pages/tenants/catalog/productItems'
 import { ProductMetricDetail } from '@/pages/tenants/catalog/productMetricDetail'
 import { ProductMetrics } from '@/pages/tenants/catalog/productMetrics'
@@ -35,6 +36,7 @@ export const productCatalogRoutes: RouteObject = {
         {
           path: 'metrics',
           element: <ProductMetrics />,
+          handle: { title: 'Metrics' },
           children: [
             {
               element: <StandardOnly />,
@@ -54,6 +56,7 @@ export const productCatalogRoutes: RouteObject = {
         {
           path: 'metrics/:metricId',
           element: <ProductMetricDetail />,
+          handle: { title: 'Metric' },
         },
         {
           path: 'plans',
@@ -61,6 +64,7 @@ export const productCatalogRoutes: RouteObject = {
             {
               path: ':planLocalId/:planVersion?',
               element: <PlanEdit />,
+              handle: { title: 'Plan' },
               children: [
                 {
                   element: <StandardOnly />,
@@ -94,6 +98,7 @@ export const productCatalogRoutes: RouteObject = {
         {
           path: 'plans',
           element: <Plans />,
+          handle: { title: 'Plans' },
           children: [
             {
               index: true,
@@ -113,12 +118,25 @@ export const productCatalogRoutes: RouteObject = {
           element: <StandardOnly />,
           children: [
             {
+              path: 'features',
+              element: <Features />,
+              handle: { title: 'Features' },
+              children: [
+                { index: true, element: null },
+                { path: 'create', element: <FeatureCreate />, handle: { title: 'New feature' } },
+                { path: ':featureId', element: <FeatureDetail /> },
+                { path: 'edit/:featureId', element: <FeatureEdit />, handle: { title: 'Edit feature' } },
+              ],
+            },
+            {
               path: 'items',
               element: <Products />,
+              handle: { title: 'Items' },
             },
             {
               path: 'addons',
               element: <Addons />,
+              handle: { title: 'Add-ons' },
               children: [
                 {
                   index: true,
@@ -127,20 +145,24 @@ export const productCatalogRoutes: RouteObject = {
                 {
                   path: 'add-addon',
                   element: <CreateAddon />,
+                  handle: { title: 'New add-on' },
                 },
                 {
                   path: ':addonId',
                   element: <AddonDetails />,
+                  handle: { title: 'Add-on' },
                 },
                 {
                   path: 'edit/:addonId',
                   element: <EditAddon />,
+                  handle: { title: 'Edit add-on' },
                 },
               ],
             },
             {
               path: 'coupons',
               element: <Coupons />,
+              handle: { title: 'Coupons' },
               children: [
                 {
                   index: true,
@@ -149,10 +171,12 @@ export const productCatalogRoutes: RouteObject = {
                 {
                   path: 'add-coupon',
                   element: <CreateCoupon />,
+                  handle: { title: 'New coupon' },
                 },
                 {
                   path: ':couponLocalId',
                   element: <CouponDetails />,
+                  handle: { title: 'Coupon' },
                 },
               ],
             },

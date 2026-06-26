@@ -1,8 +1,4 @@
-import {
-  createConnectQueryKey,
-  createProtobufSafeUpdater,
-  useMutation,
-} from '@connectrpc/connect-query'
+import { createConnectQueryKey, useMutation } from '@connectrpc/connect-query';
 import {
   ScrollArea,
   Sheet,
@@ -30,6 +26,7 @@ import {
   wrapAsNewPriceEntries,
 } from '@/features/pricing/conversions'
 import { useZodForm } from '@/hooks/useZodForm'
+import { getResolvedEntitlementsForPlanVersion } from '@/rpc/api/entitlements/v1/entitlements-EntitlementsService_connectquery'
 import {
   createPriceComponent,
   listPriceComponents,
@@ -60,13 +57,17 @@ export const AddComponentPanel = () => {
     onSuccess: data => {
       if (!version?.id) return
       if (data.component) {
-        queryClient.setQueryData(
-          createConnectQueryKey(listPriceComponents, { planVersionId: version.id }),
-          createProtobufSafeUpdater(listPriceComponents, prev => ({
-            components: [...(prev?.components ?? []), data.component!],
-          }))
-        )
+        queryClient.invalidateQueries({
+          queryKey: createConnectQueryKey({
+            schema: listPriceComponents,
+            cardinality: undefined
+          })
+        })
       }
+      queryClient.invalidateQueries({ queryKey: createConnectQueryKey({
+        schema: getResolvedEntitlementsForPlanVersion.parent,
+        cardinality: undefined
+      }) })
       navigate('..')
     },
   })

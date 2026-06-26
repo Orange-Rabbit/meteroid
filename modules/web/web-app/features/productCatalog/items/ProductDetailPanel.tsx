@@ -1,4 +1,4 @@
-import { disableQuery } from '@connectrpc/connect-query'
+import { skipToken } from '@connectrpc/connect-query'
 import {
   Badge,
   Separator,
@@ -16,8 +16,10 @@ import {
 } from '@md/ui'
 import { Link } from 'react-router-dom'
 
+import { ProductEntitlementsSection } from '@/features/productCatalog/items/ProductEntitlementsSection'
 import { useBasePath } from '@/hooks/useBasePath'
 import { useQuery } from '@/lib/connectrpc'
+import { env } from '@/lib/env'
 import { feeTypeLabel, formatCadence, formatPricingSummary } from '@/lib/mapping/prices'
 import { FeeStructure_BillingType, FeeStructure_UsageModel } from '@/rpc/api/prices/v1/models_pb'
 import { listPricesByProduct } from '@/rpc/api/prices/v1/prices-PricesService_connectquery'
@@ -62,12 +64,12 @@ function billingTypeLabel(bt: FeeStructure_BillingType): string {
 export const ProductDetailPanel = ({ productId, onClose }: ProductDetailPanelProps) => {
   const productQuery = useQuery(
     getProduct,
-    productId ? { productId } : disableQuery
+    productId ? { productId } : skipToken
   )
 
   const pricesQuery = useQuery(
     listPricesByProduct,
-    productId ? { productId } : disableQuery
+    productId ? { productId } : skipToken
   )
 
   const product = productQuery.data?.product
@@ -147,6 +149,16 @@ export const ProductDetailPanel = ({ productId, onClose }: ProductDetailPanelPro
                   />
                 </>
               )}
+
+            {env.entitlementsEnabled && (
+              <>
+                <Separator />
+                <section className="flex flex-col gap-3">
+                  <h3 className="text-sm font-medium text-muted-foreground">Entitlements</h3>
+                  <ProductEntitlementsSection productId={product.id} />
+                </section>
+              </>
+            )}
 
             <Separator />
             <section className="flex flex-col gap-3">

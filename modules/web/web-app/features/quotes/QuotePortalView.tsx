@@ -1,4 +1,4 @@
-import { useMutation } from '@connectrpc/connect-query'
+import { createConnectQueryKey, useMutation } from '@connectrpc/connect-query';
 import { zodResolver } from '@hookform/resolvers/zod'
 import {
   Alert,
@@ -63,7 +63,10 @@ const QuotePortalView: FC<QuotePortalViewProps> = ({ quoteData }) => {
 
   const signQuoteMutation = useMutation(signQuote, {
     onSuccess: async () => {
-      queryClient.invalidateQueries({ queryKey: [getQuotePortal.service.typeName] })
+      queryClient.invalidateQueries({ queryKey: createConnectQueryKey({
+        schema: getQuotePortal.parent,
+        cardinality: undefined
+      }) })
     },
   })
 
@@ -81,7 +84,7 @@ const QuotePortalView: FC<QuotePortalViewProps> = ({ quoteData }) => {
   const currentUserName = quoteData.currentRecipientName || customer?.name || ''
   const hasCurrentUserSigned = signatures.some(s => s.signedByEmail === currentUserEmail)
 
-  const signForm = useForm<SignQuoteFormData>({
+  const signForm = useForm<z.input<typeof signQuoteSchema>, unknown, SignQuoteFormData>({
     resolver: zodResolver(signQuoteSchema),
     defaultValues: {
       recipientEmail: currentUserEmail,

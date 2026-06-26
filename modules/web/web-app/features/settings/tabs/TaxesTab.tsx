@@ -1,8 +1,5 @@
-import {
-  createConnectQueryKey,
-  createProtobufSafeUpdater,
-  useMutation,
-} from '@connectrpc/connect-query'
+import { create } from '@bufbuild/protobuf';
+import { createConnectQueryKey, useMutation } from '@connectrpc/connect-query';
 import {
   Button,
   Card,
@@ -43,13 +40,15 @@ import {
   updateInvoicingEntity,
 } from '@/rpc/api/invoicingentities/v1/invoicingentities-InvoicingEntitiesService_connectquery'
 import { TaxResolver } from '@/rpc/api/invoicingentities/v1/models_pb'
-import { CustomTax, CustomTaxNew, TaxRule } from '@/rpc/api/taxes/v1/models_pb'
+import { CustomTaxSchema, CustomTaxNewSchema, TaxRuleSchema } from '@/rpc/api/taxes/v1/models_pb';
 import {
   createCustomTax,
   deleteCustomTax,
   listCustomTaxes,
   updateCustomTax,
 } from '@/rpc/api/taxes/v1/taxes-TaxesService_connectquery'
+
+import type { CustomTax } from '@/rpc/api/taxes/v1/models_pb';
 
 const taxSettingsSchema = z.object({
   taxResolver: z.enum(['NONE', 'MANUAL', 'METEROID_EU_VAT']).optional(),
@@ -122,20 +121,12 @@ export const TaxesTab = () => {
   const updateInvoicingEntityMut = useMutation(updateInvoicingEntity, {
     onSuccess: async res => {
       if (res.entity) {
-        queryClient.setQueryData(
-          createConnectQueryKey(listInvoicingEntities),
-          createProtobufSafeUpdater(listInvoicingEntities, prev => {
-            return {
-              entities: prev?.entities.map(entity => {
-                if (entity.id === res.entity?.id) {
-                  return res.entity
-                } else {
-                  return entity
-                }
-              }),
-            }
+        queryClient.invalidateQueries({
+          queryKey: createConnectQueryKey({
+            schema: listInvoicingEntities,
+            cardinality: undefined
           })
-        )
+        })
         toast.success('Tax settings updated')
       }
     },
@@ -168,8 +159,14 @@ export const TaxesTab = () => {
   const createCustomTaxMut = useMutation(createCustomTax, {
     onSuccess: async () => {
       await queryClient.invalidateQueries({
-        queryKey: createConnectQueryKey(listCustomTaxes, {
-          invoicingEntityId: invoiceEntityId ?? '',
+        queryKey: createConnectQueryKey({
+          schema: listCustomTaxes,
+
+          input: {
+            invoicingEntityId: invoiceEntityId ?? '',
+          },
+
+          cardinality: 'finite'
         }),
       })
       toast.success('Custom tax created successfully')
@@ -184,8 +181,14 @@ export const TaxesTab = () => {
   const updateCustomTaxMut = useMutation(updateCustomTax, {
     onSuccess: async () => {
       await queryClient.invalidateQueries({
-        queryKey: createConnectQueryKey(listCustomTaxes, {
-          invoicingEntityId: invoiceEntityId ?? '',
+        queryKey: createConnectQueryKey({
+          schema: listCustomTaxes,
+
+          input: {
+            invoicingEntityId: invoiceEntityId ?? '',
+          },
+
+          cardinality: 'finite'
         }),
       })
       toast.success('Custom tax updated successfully')
@@ -201,8 +204,14 @@ export const TaxesTab = () => {
   const deleteCustomTaxMut = useMutation(deleteCustomTax, {
     onSuccess: async () => {
       await queryClient.invalidateQueries({
-        queryKey: createConnectQueryKey(listCustomTaxes, {
-          invoicingEntityId: invoiceEntityId ?? '',
+        queryKey: createConnectQueryKey({
+          schema: listCustomTaxes,
+
+          input: {
+            invoicingEntityId: invoiceEntityId ?? '',
+          },
+
+          cardinality: 'finite'
         }),
       })
       toast.success('Custom tax deleted successfully')
@@ -251,7 +260,7 @@ export const TaxesTab = () => {
 
     const taxRules = values.rules.map(
       rule =>
-        new TaxRule({
+        create(TaxRuleSchema, {
           country: rule.country || undefined,
           region: rule.region || undefined,
           rate: rule.rate,
@@ -260,7 +269,7 @@ export const TaxesTab = () => {
 
     if (editingCustomTax) {
       await updateCustomTaxMut.mutateAsync({
-        customTax: new CustomTax({
+        customTax: create(CustomTaxSchema, {
           id: editingCustomTax.id,
           invoicingEntityId: invoiceEntityId,
           name: values.name,
@@ -270,7 +279,7 @@ export const TaxesTab = () => {
       })
     } else {
       await createCustomTaxMut.mutateAsync({
-        customTax: new CustomTaxNew({
+        customTax: create(CustomTaxNewSchema, {
           invoicingEntityId: invoiceEntityId,
           name: values.name,
           taxCode: values.taxCode,
@@ -328,7 +337,7 @@ export const TaxesTab = () => {
                 </p>
               </div>
               <div className="col-span-4 content-center flex flex-row">
-                <div className="flex-grow"></div>
+                <div className="grow"></div>
                 <InvoicingEntitySelect />
               </div>
             </div>

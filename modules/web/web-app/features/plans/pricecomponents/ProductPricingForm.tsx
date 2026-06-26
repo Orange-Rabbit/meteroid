@@ -1,4 +1,4 @@
-import { disableQuery } from '@connectrpc/connect-query'
+import { skipToken } from '@connectrpc/connect-query'
 import {
   Button,
   ComboboxFormField,
@@ -7,6 +7,7 @@ import {
   InputFormField,
   SelectFormField,
   SelectItem,
+  type ButtonVariants,
 } from '@md/ui'
 import { ExternalLinkIcon, PlusIcon } from 'lucide-react'
 import { useEffect, useMemo, useRef } from 'react'
@@ -253,11 +254,15 @@ interface ProductPricingFormProps {
   feeType: ComponentFeeType
   currency: string
   existingPrice?: Price
+  // Pre-validated form state to restore directly (e.g. re-editing a custom fee),
+  // bypassing the lossy Price round-trip which drops the metric.
+  initialFormData?: Record<string, unknown>
   structuralInfo?: StructuralInfo
   editableStructure?: boolean
   isOverride?: boolean
   onSubmit: (formData: Record<string, unknown>) => void
   submitLabel?: string
+  submitVariant?: ButtonVariants['variant']
   familyLocalId?: string
 }
 
@@ -265,18 +270,20 @@ export const ProductPricingForm = ({
   feeType,
   currency,
   existingPrice,
+  initialFormData,
   structuralInfo,
   editableStructure,
   isOverride,
   onSubmit,
   submitLabel = 'Add to Plan',
+  submitVariant = 'brand',
   familyLocalId,
 }: ProductPricingFormProps) => {
   const structural = structuralInfo ?? {}
 
   const defaults = useMemo(
-    () => buildDefaults(feeType, existingPrice, isOverride),
-    [feeType, existingPrice, isOverride]
+    () => initialFormData ?? buildDefaults(feeType, existingPrice, isOverride),
+    [initialFormData, feeType, existingPrice, isOverride]
   )
 
   const schema = useMemo(
@@ -317,7 +324,7 @@ export const ProductPricingForm = ({
       <div className="flex justify-end pt-2">
         <Button
           type="button"
-          variant="brand"
+          variant={submitVariant}
           onClick={methods.handleSubmit(
             data => onSubmit(data as Record<string, unknown>),
             errors => {
@@ -742,7 +749,7 @@ const UsagePricingInline = ({
     }
   }, [usageModel, methods])
 
-  const metricQuery = useQuery(getBillableMetric, metricId ? { id: metricId } : disableQuery)
+  const metricQuery = useQuery(getBillableMetric, metricId ? { id: metricId } : skipToken)
   const { dimensionHeaders, validCombinations } = useMatrixDimensions(
     usageModel === 'matrix' ? metricQuery.data?.billableMetric : undefined
   )

@@ -2,6 +2,10 @@
 
 pub mod sql_types {
     #[derive(diesel::query_builder::QueryId, diesel::sql_types::SqlType)]
+    #[diesel(postgres_type(name = "ActorTypeEnum"))]
+    pub struct ActorTypeEnum;
+
+    #[derive(diesel::query_builder::QueryId, diesel::sql_types::SqlType)]
     #[diesel(postgres_type(name = "BankAccountFormat"))]
     pub struct BankAccountFormat;
 
@@ -34,18 +38,6 @@ pub mod sql_types {
     pub struct CheckoutTypeEnum;
 
     #[derive(diesel::query_builder::QueryId, diesel::sql_types::SqlType)]
-    #[diesel(postgres_type(name = "ConnectConnectionStatusEnum"))]
-    pub struct ConnectConnectionStatusEnum;
-
-    #[derive(diesel::query_builder::QueryId, diesel::sql_types::SqlType)]
-    #[diesel(postgres_type(name = "ConnectConnectionTypeEnum"))]
-    pub struct ConnectConnectionTypeEnum;
-
-    #[derive(diesel::query_builder::QueryId, diesel::sql_types::SqlType)]
-    #[diesel(postgres_type(name = "ConnectOnboardingModeEnum"))]
-    pub struct ConnectOnboardingModeEnum;
-
-    #[derive(diesel::query_builder::QueryId, diesel::sql_types::SqlType)]
     #[diesel(postgres_type(name = "ConnectorProviderEnum"))]
     pub struct ConnectorProviderEnum;
 
@@ -68,6 +60,22 @@ pub mod sql_types {
     #[derive(diesel::query_builder::QueryId, diesel::sql_types::SqlType)]
     #[diesel(postgres_type(name = "DeadLetterStatusEnum"))]
     pub struct DeadLetterStatusEnum;
+
+    #[derive(diesel::query_builder::QueryId, diesel::sql_types::SqlType)]
+    #[diesel(postgres_type(name = "EntitlementEntityTypeEnum"))]
+    pub struct EntitlementEntityTypeEnum;
+
+    #[derive(diesel::query_builder::QueryId, diesel::sql_types::SqlType)]
+    #[diesel(postgres_type(name = "EntitlementModeEnum"))]
+    pub struct EntitlementModeEnum;
+
+    #[derive(diesel::query_builder::QueryId, diesel::sql_types::SqlType)]
+    #[diesel(postgres_type(name = "FeatureStatusEnum"))]
+    pub struct FeatureStatusEnum;
+
+    #[derive(diesel::query_builder::QueryId, diesel::sql_types::SqlType)]
+    #[diesel(postgres_type(name = "FeatureTypeEnum"))]
+    pub struct FeatureTypeEnum;
 
     #[derive(diesel::query_builder::QueryId, diesel::sql_types::SqlType)]
     #[diesel(postgres_type(name = "FeeTypeEnum"))]
@@ -179,7 +187,6 @@ diesel::table! {
         id -> Uuid,
         name -> Text,
         created_at -> Timestamp,
-        created_by -> Uuid,
         tenant_id -> Uuid,
         hash -> Text,
         hint -> Text,
@@ -212,7 +219,6 @@ diesel::table! {
         bank_name -> Text,
         format -> BankAccountFormat,
         account_numbers -> Text,
-        created_by -> Uuid,
         created_at -> Timestamp,
     }
 }
@@ -379,7 +385,6 @@ diesel::table! {
         segmentation_matrix -> Nullable<Jsonb>,
         usage_group_key -> Nullable<Text>,
         created_at -> Timestamp,
-        created_by -> Uuid,
         updated_at -> Nullable<Timestamp>,
         archived_at -> Nullable<Timestamp>,
         tenant_id -> Uuid,
@@ -398,7 +403,6 @@ diesel::table! {
         tenant_id -> Uuid,
         customer_id -> Uuid,
         plan_version_id -> Uuid,
-        created_by -> Uuid,
         billing_start_date -> Nullable<Date>,
         billing_day_anchor -> Nullable<Int2>,
         net_terms -> Nullable<Int4>,
@@ -422,110 +426,6 @@ diesel::table! {
         checkout_type -> CheckoutTypeEnum,
         payment_methods_config -> Nullable<Jsonb>,
         change_date -> Nullable<Date>,
-    }
-}
-
-diesel::table! {
-    connect_access_token (id) {
-        id -> Uuid,
-        token_hash -> Text,
-        oauth_app_id -> Uuid,
-        connected_organization_id -> Uuid,
-        scopes -> Array<Nullable<Text>>,
-        expires_at -> Timestamptz,
-        created_at -> Timestamptz,
-        revoked_at -> Nullable<Timestamptz>,
-    }
-}
-
-diesel::table! {
-    connect_authorization_code (id) {
-        id -> Uuid,
-        code_hash -> Text,
-        oauth_app_id -> Uuid,
-        connected_organization_id -> Uuid,
-        redirect_uri -> Text,
-        scopes -> Array<Nullable<Text>>,
-        code_challenge -> Nullable<Text>,
-        code_challenge_method -> Nullable<Text>,
-        expires_at -> Timestamptz,
-        created_at -> Timestamptz,
-        used_at -> Nullable<Timestamptz>,
-    }
-}
-
-diesel::table! {
-    use diesel::sql_types::*;
-    use super::sql_types::ConnectConnectionTypeEnum;
-    use super::sql_types::ConnectConnectionStatusEnum;
-    use super::sql_types::ConnectOnboardingModeEnum;
-
-    connect_connected_account (id) {
-        id -> Uuid,
-        platform_organization_id -> Uuid,
-        connected_organization_id -> Nullable<Uuid>,
-        connection_type -> ConnectConnectionTypeEnum,
-        status -> ConnectConnectionStatusEnum,
-        onboarding_mode -> ConnectOnboardingModeEnum,
-        onboarding_completed_at -> Nullable<Timestamptz>,
-        metadata -> Nullable<Jsonb>,
-        created_at -> Timestamptz,
-        revoked_at -> Nullable<Timestamptz>,
-        pending_email -> Nullable<Text>,
-        pending_organization_name -> Nullable<Text>,
-        pending_country -> Nullable<Text>,
-        platform_customer_id -> Nullable<Uuid>,
-        connected_tenant_id -> Nullable<Uuid>,
-    }
-}
-
-diesel::table! {
-    connect_oauth_app (id) {
-        id -> Uuid,
-        organization_id -> Uuid,
-        name -> Text,
-        client_id -> Text,
-        client_secret_hash -> Text,
-        client_secret_hint -> Text,
-        redirect_uris -> Array<Nullable<Text>>,
-        scopes -> Array<Nullable<Text>>,
-        is_active -> Bool,
-        created_at -> Timestamptz,
-        updated_at -> Nullable<Timestamptz>,
-    }
-}
-
-diesel::table! {
-    connect_onboarding_link (id) {
-        id -> Uuid,
-        connected_account_id -> Uuid,
-        token_hash -> Text,
-        redirect_url -> Text,
-        expires_at -> Timestamptz,
-        used_at -> Nullable<Timestamptz>,
-        created_at -> Timestamptz,
-    }
-}
-
-diesel::table! {
-    connect_platform_settings (organization_id) {
-        organization_id -> Uuid,
-        is_platform_enabled -> Bool,
-        default_scopes -> Array<Nullable<Text>>,
-        branding_invoicing_entity_id -> Nullable<Uuid>,
-        created_at -> Timestamptz,
-    }
-}
-
-diesel::table! {
-    connect_refresh_token (id) {
-        id -> Uuid,
-        token_hash -> Text,
-        access_token_id -> Uuid,
-        expires_at -> Nullable<Timestamptz>,
-        created_at -> Timestamptz,
-        revoked_at -> Nullable<Timestamptz>,
-        rotated_to_id -> Nullable<Uuid>,
     }
 }
 
@@ -626,9 +526,7 @@ diesel::table! {
         id -> Uuid,
         name -> Text,
         created_at -> Timestamp,
-        created_by -> Uuid,
         updated_at -> Nullable<Timestamp>,
-        updated_by -> Nullable<Uuid>,
         archived_at -> Nullable<Timestamp>,
         tenant_id -> Uuid,
         alias -> Nullable<Text>,
@@ -639,7 +537,6 @@ diesel::table! {
         billing_address -> Nullable<Jsonb>,
         shipping_address -> Nullable<Jsonb>,
         invoicing_entity_id -> Uuid,
-        archived_by -> Nullable<Uuid>,
         current_payment_method_id -> Nullable<Uuid>,
         vat_number -> Nullable<Text>,
         invoicing_emails -> Array<Nullable<Text>>,
@@ -739,14 +636,39 @@ diesel::table! {
 }
 
 diesel::table! {
-    express_onboarding_link (id) {
+    use diesel::sql_types::*;
+    use super::sql_types::EntitlementEntityTypeEnum;
+    use super::sql_types::EntitlementModeEnum;
+
+    entitlement (id) {
         id -> Uuid,
-        connected_account_id -> Uuid,
-        token_hash -> Text,
-        redirect_url -> Text,
-        expires_at -> Timestamp,
-        used_at -> Nullable<Timestamp>,
-        created_at -> Timestamp,
+        tenant_id -> Uuid,
+        feature_id -> Uuid,
+        entity_id -> Uuid,
+        entity_type -> EntitlementEntityTypeEnum,
+        mode -> EntitlementModeEnum,
+        value -> Jsonb,
+        created_at -> Timestamptz,
+        updated_at -> Timestamptz,
+    }
+}
+
+diesel::table! {
+    use diesel::sql_types::*;
+    use super::sql_types::FeatureTypeEnum;
+    use super::sql_types::FeatureStatusEnum;
+
+    feature (id) {
+        id -> Uuid,
+        tenant_id -> Uuid,
+        product_id -> Nullable<Uuid>,
+        name -> Text,
+        description -> Nullable<Text>,
+        feature_type -> FeatureTypeEnum,
+        status -> FeatureStatusEnum,
+        metric_id -> Nullable<Uuid>,
+        created_at -> Timestamptz,
+        updated_at -> Timestamptz,
     }
 }
 
@@ -810,6 +732,7 @@ diesel::table! {
         marked_as_uncollectible_at -> Nullable<Timestamp>,
         invoicing_entity_id -> Uuid,
         parent_invoice_id -> Nullable<Uuid>,
+        consolidated_into_invoice_id -> Nullable<Uuid>,
     }
 }
 
@@ -845,6 +768,7 @@ diesel::table! {
         bank_account_id -> Nullable<Uuid>,
         direct_debit_provider_id -> Nullable<Uuid>,
         tax_resolver -> TaxResolverEnum,
+        consolidate_recurring_invoices -> Bool,
     }
 }
 
@@ -865,9 +789,25 @@ diesel::table! {
         slug -> Text,
         created_at -> Timestamp,
         archived_at -> Nullable<Timestamp>,
-        invite_link_hash -> Nullable<Text>,
         default_country -> Text,
         is_express -> Bool,
+    }
+}
+
+diesel::table! {
+    use diesel::sql_types::*;
+    use super::sql_types::OrganizationUserRole;
+
+    organization_invite (id) {
+        id -> Uuid,
+        organization_id -> Uuid,
+        invited_email -> Text,
+        invited_by -> Uuid,
+        role -> OrganizationUserRole,
+        created_at -> Timestamptz,
+        expires_at -> Timestamptz,
+        accepted_at -> Nullable<Timestamptz>,
+        revoked_at -> Nullable<Timestamptz>,
     }
 }
 
@@ -928,7 +868,6 @@ diesel::table! {
         name -> Text,
         description -> Nullable<Text>,
         created_at -> Timestamp,
-        created_by -> Uuid,
         updated_at -> Nullable<Timestamp>,
         archived_at -> Nullable<Timestamp>,
         tenant_id -> Uuid,
@@ -961,7 +900,6 @@ diesel::table! {
         currency -> Text,
         billing_cycles -> Nullable<Int4>,
         created_at -> Timestamp,
-        created_by -> Uuid,
         trialing_plan_id -> Nullable<Uuid>,
         trial_is_free -> Bool,
         uses_product_pricing -> Bool,
@@ -993,7 +931,6 @@ diesel::table! {
         pricing -> Jsonb,
         tenant_id -> Uuid,
         created_at -> Timestamp,
-        created_by -> Uuid,
         archived_at -> Nullable<Timestamp>,
         catalog -> Bool,
     }
@@ -1019,7 +956,6 @@ diesel::table! {
         name -> Text,
         description -> Nullable<Text>,
         created_at -> Timestamp,
-        created_by -> Uuid,
         updated_at -> Nullable<Timestamp>,
         archived_at -> Nullable<Timestamp>,
         tenant_id -> Uuid,
@@ -1150,6 +1086,7 @@ diesel::table! {
         legacy_fee -> Nullable<Jsonb>,
         is_override -> Bool,
         price_id -> Nullable<Uuid>,
+        example_usage_quantity -> Nullable<Numeric>,
     }
 }
 
@@ -1211,6 +1148,7 @@ diesel::table! {
         error -> Nullable<Text>,
         processed_at -> Nullable<Timestamp>,
         source -> Text,
+        created_by_customer -> Bool,
     }
 }
 
@@ -1247,7 +1185,6 @@ diesel::table! {
         start_date -> Date,
         plan_version_id -> Uuid,
         created_at -> Timestamp,
-        created_by -> Uuid,
         net_terms -> Int4,
         invoice_memo -> Nullable<Text>,
         invoice_threshold -> Nullable<Numeric>,
@@ -1296,6 +1233,10 @@ diesel::table! {
         product_id -> Nullable<Uuid>,
         price_id -> Nullable<Uuid>,
         quantity -> Int4,
+        effective_from -> Date,
+        effective_to -> Nullable<Date>,
+        lineage_id -> Nullable<Uuid>,
+        added_by_amendment -> Bool,
     }
 }
 
@@ -1314,6 +1255,8 @@ diesel::table! {
         price_id -> Nullable<Uuid>,
         effective_from -> Date,
         effective_to -> Nullable<Date>,
+        lineage_id -> Nullable<Uuid>,
+        added_by_amendment -> Bool,
     }
 }
 
@@ -1379,6 +1322,40 @@ diesel::table! {
     }
 }
 
+diesel::table! {
+    use diesel::sql_types::*;
+    use super::sql_types::ActorTypeEnum;
+
+    entity_activity (id) {
+        id -> Uuid,
+        tenant_id -> Uuid,
+        entity_type -> Text,
+        entity_id -> Uuid,
+        activity_type -> Text,
+        actor_type -> ActorTypeEnum,
+        actor_uuid -> Nullable<Uuid>,
+        actor_alias -> Nullable<Text>,
+        metadata -> Nullable<Jsonb>,
+        occurred_at -> Timestamptz,
+        agg_customer_id -> Nullable<Uuid>,
+        agg_subscription_id -> Nullable<Uuid>,
+    }
+}
+
+diesel::table! {
+    sent_email (id) {
+        id -> Uuid,
+        tenant_id -> Uuid,
+        sent_at -> Timestamptz,
+        subject -> Text,
+        from_addr -> Text,
+        reply_to -> Nullable<Text>,
+        recipients -> Array<Nullable<Text>>,
+        body_html -> Text,
+        attachments -> Nullable<Jsonb>,
+    }
+}
+
 diesel::joinable!(add_on -> price (price_id));
 diesel::joinable!(add_on -> product (product_id));
 diesel::joinable!(add_on -> tenant (tenant_id));
@@ -1408,17 +1385,6 @@ diesel::joinable!(checkout_session -> customer (customer_id));
 diesel::joinable!(checkout_session -> plan_version (plan_version_id));
 diesel::joinable!(checkout_session -> subscription (subscription_id));
 diesel::joinable!(checkout_session -> tenant (tenant_id));
-diesel::joinable!(connect_access_token -> connect_oauth_app (oauth_app_id));
-diesel::joinable!(connect_access_token -> organization (connected_organization_id));
-diesel::joinable!(connect_authorization_code -> connect_oauth_app (oauth_app_id));
-diesel::joinable!(connect_authorization_code -> organization (connected_organization_id));
-diesel::joinable!(connect_connected_account -> customer (platform_customer_id));
-diesel::joinable!(connect_connected_account -> tenant (connected_tenant_id));
-diesel::joinable!(connect_oauth_app -> organization (organization_id));
-diesel::joinable!(connect_onboarding_link -> connect_connected_account (connected_account_id));
-diesel::joinable!(connect_platform_settings -> invoicing_entity (branding_invoicing_entity_id));
-diesel::joinable!(connect_platform_settings -> organization (organization_id));
-diesel::joinable!(connect_refresh_token -> connect_access_token (access_token_id));
 diesel::joinable!(coupon -> tenant (tenant_id));
 diesel::joinable!(coupon_plan -> coupon (coupon_id));
 diesel::joinable!(coupon_plan -> plan (plan_id));
@@ -1445,12 +1411,19 @@ diesel::joinable!(customer_connection -> customer (customer_id));
 diesel::joinable!(customer_payment_method -> customer_connection (connection_id));
 diesel::joinable!(customer_payment_method -> tenant (tenant_id));
 diesel::joinable!(dead_letter_message -> tenant (tenant_id));
+diesel::joinable!(entitlement -> feature (feature_id));
+diesel::joinable!(entitlement -> tenant (tenant_id));
+diesel::joinable!(feature -> billable_metric (metric_id));
+diesel::joinable!(feature -> product (product_id));
+diesel::joinable!(feature -> tenant (tenant_id));
 diesel::joinable!(invoice -> customer (customer_id));
 diesel::joinable!(invoice -> invoicing_entity (invoicing_entity_id));
 diesel::joinable!(invoice -> plan_version (plan_version_id));
 diesel::joinable!(invoice -> tenant (tenant_id));
 diesel::joinable!(invoicing_entity -> bank_account (bank_account_id));
 diesel::joinable!(invoicing_entity -> tenant (tenant_id));
+diesel::joinable!(organization_invite -> organization (organization_id));
+diesel::joinable!(organization_invite -> user (invited_by));
 diesel::joinable!(organization_member -> organization (organization_id));
 diesel::joinable!(organization_member -> user (user_id));
 diesel::joinable!(payment_transaction -> checkout_session (checkout_session_id));
@@ -1515,7 +1488,12 @@ diesel::joinable!(subscription_event -> subscription (subscription_id));
 diesel::joinable!(tenant -> organization (organization_id));
 diesel::joinable!(webhook_in_event -> connector (provider_config_id));
 
+diesel::joinable!(entity_activity -> tenant (tenant_id));
+diesel::joinable!(sent_email -> entity_activity (id));
+diesel::joinable!(sent_email -> tenant (tenant_id));
 diesel::allow_tables_to_appear_in_same_query!(
+    entity_activity,
+    sent_email,
     add_on,
     api_token,
     applied_coupon,
@@ -1530,13 +1508,6 @@ diesel::allow_tables_to_appear_in_same_query!(
     bi_revenue_daily,
     billable_metric,
     checkout_session,
-    connect_access_token,
-    connect_authorization_code,
-    connect_connected_account,
-    connect_oauth_app,
-    connect_onboarding_link,
-    connect_platform_settings,
-    connect_refresh_token,
     connector,
     coupon,
     coupon_plan,
@@ -1548,12 +1519,14 @@ diesel::allow_tables_to_appear_in_same_query!(
     customer_connection,
     customer_payment_method,
     dead_letter_message,
-    express_onboarding_link,
+    entitlement,
+    feature,
     historical_rates_from_usd,
     invoice,
     invoicing_entity,
     oauth_verifier,
     organization,
+    organization_invite,
     organization_member,
     outbox_event,
     payment_transaction,

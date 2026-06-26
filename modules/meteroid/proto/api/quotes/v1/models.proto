@@ -3,6 +3,7 @@ syntax = "proto3";
 package meteroid.api.quotes.v1;
 
 import "api/customers/v1/models.proto";
+import "api/entitlements/v1/models.proto";
 import "api/invoicingentities/v1/models.proto";
 import "api/subscriptions/v1/models.proto";
 
@@ -80,7 +81,6 @@ message DetailedQuote {
   repeated QuoteAddOn add_ons = 8;
   repeated QuoteCoupon coupons = 9;
   repeated QuoteSignature signatures = 6;
-  repeated QuoteActivity activities = 7;
 }
 
 
@@ -92,6 +92,17 @@ message QuoteComponent {
   meteroid.api.subscriptions.v1.SubscriptionFeeBillingPeriod period = 5;
   meteroid.api.subscriptions.v1.SubscriptionFee fee = 6;
   bool is_override = 7;
+  optional string example_usage_quantity = 8;
+  // Computed informative amount for example_usage_quantity, decimal string in
+  // major units. Absent for non-usage components or models that can't be priced
+  // from a single quantity (e.g. matrix). Display-only, never billed.
+  optional string example_usage_amount = 9;
+}
+
+message QuoteUsageExample {
+  optional string price_component_id = 1;
+  optional string component_name = 2;
+  string example_quantity = 3;
 }
 
 message QuoteAddOn {
@@ -123,19 +134,6 @@ message QuoteSignature {
   optional string user_agent = 10;
   optional string verification_token = 11;
   optional string verified_at = 12;
-}
-
-message QuoteActivity {
-  string id = 1;
-  string quote_id = 2;
-  string activity_type = 3;
-  string description = 4;
-  string actor_type = 5;
-  optional string actor_id = 6;
-  optional string actor_name = 7;
-  string created_at = 9;
-  optional string ip_address = 10;
-  optional string user_agent = 11;
 }
 
 message CreateQuote {
@@ -178,6 +176,12 @@ message CreateQuote {
   // Add-ons and coupons
   meteroid.api.subscriptions.v1.CreateSubscriptionAddOns add_ons = 27;
   CreateQuoteCoupons coupons = 28;
+
+  // Inline entitlement specs to attach to the quote
+  repeated meteroid.api.entitlements.v1.EntitlementSpec entitlements = 30;
+
+  // Informative example usage quantities to display for usage-based components.
+  repeated QuoteUsageExample usage_examples = 31;
 }
 
 message CreateQuoteCoupon {

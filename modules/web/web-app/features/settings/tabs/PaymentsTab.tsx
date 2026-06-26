@@ -1,8 +1,4 @@
-import {
-  createConnectQueryKey,
-  createProtobufSafeUpdater,
-  useMutation,
-} from '@connectrpc/connect-query'
+import { createConnectQueryKey, useMutation } from '@connectrpc/connect-query';
 import {
   Button,
   Card,
@@ -56,17 +52,13 @@ const PaymentMethodsForm = ({
   const queryClient = useQueryClient()
 
   const updateInvoicingEntityMut = useMutation(updateInvoicingEntityProviders, {
-    onSuccess: async res => {
-      queryClient.setQueryData(
-        createConnectQueryKey(getInvoicingEntityProviders, { id: invoiceEntityId }),
-        createProtobufSafeUpdater(getInvoicingEntityProviders, () => {
-          return {
-            cardProvider: res.cardProvider,
-            directDebitProvider: res.directDebitProvider,
-            bankAccount: res.bankAccount,
-          }
+    onSuccess: async () => {
+      queryClient.invalidateQueries({
+        queryKey: createConnectQueryKey({
+          schema: getInvoicingEntityProviders,
+          cardinality: undefined
         })
-      )
+      })
       toast.success('Payment methods updated')
     },
   })
@@ -102,7 +94,7 @@ const PaymentMethodsForm = ({
               </p>
             </div>
             <div className="col-span-4 content-center flex flex-row">
-              <div className="flex-grow"></div>
+              <div className="grow"></div>
               <InvoicingEntitySelect />
             </div>
           </div>

@@ -1,4 +1,4 @@
-import { disableQuery, useMutation, useQuery as useConnectQuery } from '@connectrpc/connect-query'
+import { createConnectQueryKey, skipToken, useMutation, useQuery as useConnectQuery } from '@connectrpc/connect-query';
 import { useQueryClient } from '@tanstack/react-query'
 import {
   Button,
@@ -28,6 +28,7 @@ import { CopyToClipboardButton } from '@/components/CopyToClipboard'
 import { CurrencySelect } from '@/components/CurrencySelect'
 import { LocalId } from '@/components/LocalId'
 import { Property } from '@/components/Property'
+import { EntityActivityTimeline } from '@/features/activity/EntityActivityTimeline'
 import { useQueryState } from '@/hooks/useQueryState'
 import { useZodForm } from '@/hooks/useZodForm'
 import { useQuery } from '@/lib/connectrpc'
@@ -55,11 +56,14 @@ export const CouponDetails: FunctionComponent = () => {
       ? {
           couponLocalId: couponLocalId,
         }
-      : disableQuery
+      : skipToken
   )
 
   const invalidate = async () => {
-    await queryClient.invalidateQueries({ queryKey: [listCoupons.service.typeName] })
+    await queryClient.invalidateQueries({ queryKey: createConnectQueryKey({
+      schema: listCoupons.parent,
+      cardinality: undefined
+    }) })
   }
 
   const editCouponMut = useMutation(editCoupon, {
@@ -397,6 +401,19 @@ export const CouponDetails: FunctionComponent = () => {
               </div>
             </form>
           </Form>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Activity</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <EntityActivityTimeline
+            entityType="coupon"
+            entityId={coupon.id}
+            emptyLabel="No activity yet for this coupon"
+          />
         </CardContent>
       </Card>
     </div>

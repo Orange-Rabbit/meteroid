@@ -354,11 +354,11 @@ async fn test_plan_restricted_coupon_rejected(#[future] test_env: TestEnv) {
     let result = env
         .services()
         .insert_subscription(
+            common_domain::actor::Actor::System,
             meteroid_store::domain::CreateSubscription {
                 subscription: meteroid_store::domain::SubscriptionNew {
                     customer_id: CUST_UBER_ID,
                     plan_version_id: PLAN_VERSION_PAID_FREE_TRIAL_ID, // Not in allowed list
-                    created_by: USER_ID,
                     net_terms: None,
                     invoice_memo: None,
                     invoice_threshold: None,
@@ -382,6 +382,7 @@ async fn test_plan_restricted_coupon_rejected(#[future] test_env: TestEnv) {
                 coupons: Some(meteroid_store::domain::CreateSubscriptionCoupons {
                     coupons: vec![meteroid_store::domain::CreateSubscriptionCoupon { coupon_id }],
                 }),
+                entitlements: vec![],
             },
             TENANT_ID,
         )
@@ -565,11 +566,11 @@ async fn test_expired_coupon_rejected(#[future] test_env: TestEnv) {
     let result = env
         .services()
         .insert_subscription(
+            common_domain::actor::Actor::System,
             meteroid_store::domain::CreateSubscription {
                 subscription: meteroid_store::domain::SubscriptionNew {
                     customer_id: CUST_UBER_ID,
                     plan_version_id: PLAN_VERSION_PAID_FREE_TRIAL_ID,
-                    created_by: USER_ID,
                     net_terms: None,
                     invoice_memo: None,
                     invoice_threshold: None,
@@ -593,6 +594,7 @@ async fn test_expired_coupon_rejected(#[future] test_env: TestEnv) {
                 coupons: Some(meteroid_store::domain::CreateSubscriptionCoupons {
                     coupons: vec![meteroid_store::domain::CreateSubscriptionCoupon { coupon_id }],
                 }),
+                entitlements: vec![],
             },
             TENANT_ID,
         )
@@ -626,11 +628,11 @@ async fn test_disabled_coupon_rejected(#[future] test_env: TestEnv) {
     let result = env
         .services()
         .insert_subscription(
+            common_domain::actor::Actor::System,
             meteroid_store::domain::CreateSubscription {
                 subscription: meteroid_store::domain::SubscriptionNew {
                     customer_id: CUST_UBER_ID,
                     plan_version_id: PLAN_VERSION_PAID_FREE_TRIAL_ID,
-                    created_by: USER_ID,
                     net_terms: None,
                     invoice_memo: None,
                     invoice_threshold: None,
@@ -654,6 +656,7 @@ async fn test_disabled_coupon_rejected(#[future] test_env: TestEnv) {
                 coupons: Some(meteroid_store::domain::CreateSubscriptionCoupons {
                     coupons: vec![meteroid_store::domain::CreateSubscriptionCoupon { coupon_id }],
                 }),
+                entitlements: vec![],
             },
             TENANT_ID,
         )
@@ -682,11 +685,11 @@ async fn test_archived_coupon_rejected(#[future] test_env: TestEnv) {
     let result = env
         .services()
         .insert_subscription(
+            common_domain::actor::Actor::System,
             meteroid_store::domain::CreateSubscription {
                 subscription: meteroid_store::domain::SubscriptionNew {
                     customer_id: CUST_UBER_ID,
                     plan_version_id: PLAN_VERSION_PAID_FREE_TRIAL_ID,
-                    created_by: USER_ID,
                     net_terms: None,
                     invoice_memo: None,
                     invoice_threshold: None,
@@ -710,6 +713,7 @@ async fn test_archived_coupon_rejected(#[future] test_env: TestEnv) {
                 coupons: Some(meteroid_store::domain::CreateSubscriptionCoupons {
                     coupons: vec![meteroid_store::domain::CreateSubscriptionCoupon { coupon_id }],
                 }),
+                entitlements: vec![],
             },
             TENANT_ID,
         )
@@ -751,11 +755,11 @@ async fn test_non_reusable_coupon_same_customer_rejected(#[future] test_env: Tes
     let result = env
         .services()
         .insert_subscription(
+            common_domain::actor::Actor::System,
             meteroid_store::domain::CreateSubscription {
                 subscription: meteroid_store::domain::SubscriptionNew {
                     customer_id: CUST_UBER_ID,                   // Same customer
                     plan_version_id: PLAN_VERSION_PAID_TRIAL_ID, // Different plan
-                    created_by: USER_ID,
                     net_terms: None,
                     invoice_memo: None,
                     invoice_threshold: None,
@@ -779,6 +783,7 @@ async fn test_non_reusable_coupon_same_customer_rejected(#[future] test_env: Tes
                 coupons: Some(meteroid_store::domain::CreateSubscriptionCoupons {
                     coupons: vec![meteroid_store::domain::CreateSubscriptionCoupon { coupon_id }],
                 }),
+                entitlements: vec![],
             },
             TENANT_ID,
         )
@@ -920,11 +925,11 @@ async fn test_redemption_limit_reached(#[future] test_env: TestEnv) {
     let result = env
         .services()
         .insert_subscription(
+            common_domain::actor::Actor::System,
             meteroid_store::domain::CreateSubscription {
                 subscription: meteroid_store::domain::SubscriptionNew {
                     customer_id: CUST_COMODO_ID,
                     plan_version_id: PLAN_VERSION_PAID_FREE_TRIAL_ID,
-                    created_by: USER_ID,
                     net_terms: None,
                     invoice_memo: None,
                     invoice_threshold: None,
@@ -948,6 +953,7 @@ async fn test_redemption_limit_reached(#[future] test_env: TestEnv) {
                 coupons: Some(meteroid_store::domain::CreateSubscriptionCoupons {
                     coupons: vec![meteroid_store::domain::CreateSubscriptionCoupon { coupon_id }],
                 }),
+                entitlements: vec![],
             },
             TENANT_ID,
         )
@@ -983,11 +989,11 @@ async fn test_currency_mismatch_rejected(#[future] test_env: TestEnv) {
     let result = env
         .services()
         .insert_subscription(
+            common_domain::actor::Actor::System,
             meteroid_store::domain::CreateSubscription {
                 subscription: meteroid_store::domain::SubscriptionNew {
                     customer_id: CUST_UBER_ID,
                     plan_version_id: PLAN_VERSION_PAID_FREE_TRIAL_ID,
-                    created_by: USER_ID,
                     net_terms: None,
                     invoice_memo: None,
                     invoice_threshold: None,
@@ -1011,6 +1017,7 @@ async fn test_currency_mismatch_rejected(#[future] test_env: TestEnv) {
                 coupons: Some(meteroid_store::domain::CreateSubscriptionCoupons {
                     coupons: vec![meteroid_store::domain::CreateSubscriptionCoupon { coupon_id }],
                 }),
+                entitlements: vec![],
             },
             TENANT_ID,
         )
@@ -1180,11 +1187,11 @@ async fn test_multiple_coupons_one_fails_plan_restriction(#[future] test_env: Te
     let result = env
         .services()
         .insert_subscription(
+            common_domain::actor::Actor::System,
             meteroid_store::domain::CreateSubscription {
                 subscription: meteroid_store::domain::SubscriptionNew {
                     customer_id: CUST_UBER_ID,
                     plan_version_id: PLAN_VERSION_PAID_FREE_TRIAL_ID, // Not PLAN_PAID_TRIAL_ID!
-                    created_by: USER_ID,
                     net_terms: None,
                     invoice_memo: None,
                     invoice_threshold: None,
@@ -1215,6 +1222,7 @@ async fn test_multiple_coupons_one_fails_plan_restriction(#[future] test_env: Te
                         },
                     ],
                 }),
+                entitlements: vec![],
             },
             TENANT_ID,
         )

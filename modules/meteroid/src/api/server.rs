@@ -75,6 +75,10 @@ pub async fn start_api_server(
         ))
         .add_service(health_service)
         .add_service(reflection_service)
+        .add_service(api::activity::service(
+            store.clone(),
+            config.jwt_secret.clone(),
+        ))
         .add_service(api::addons::service(store.clone()))
         .add_service(api::billablemetrics::service(store.clone()))
         .add_service(api::bankaccounts::service(store.clone()))
@@ -103,6 +107,10 @@ pub async fn start_api_server(
             config.jwt_secret.clone(),
         ))
         .add_service(api::events::service(store.clone(), services.clone()))
+        .add_service(api::entitlements::entitlements_service(
+            store.clone(),
+            services.clone(),
+        ))
         .add_service(api::tenants::service(store.clone(), services.clone()))
         .add_service(api::apitokens::service(store.clone()))
         .add_service(api::pricecomponents::service(store.clone()))

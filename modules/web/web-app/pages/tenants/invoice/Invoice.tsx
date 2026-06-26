@@ -33,6 +33,7 @@ import { Fragment, useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
 
+import { EntityActivityTimeline } from '@/features/activity/EntityActivityTimeline'
 import { CreditNoteStatusBadge } from '@/features/creditNotes'
 import { AddressLinesCompact } from '@/features/customers/cards/address/AddressCard'
 import { AddManualPaymentDialog } from '@/features/invoices/AddManualPaymentDialog'
@@ -206,11 +207,13 @@ export const InvoiceView: React.FC<Props & { invoiceId: string }> = ({ invoice, 
   const [isMarkAsPaidDialogOpen, setIsMarkAsPaidDialogOpen] = useState(false)
 
   const refresh = useMutation(refreshInvoiceData, {
-    onSuccess: async res => {
-      await queryClient.setQueryData(
-        createConnectQueryKey(getInvoice, { id: invoice?.id ?? '' }),
-        res
-      )
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({
+        queryKey: createConnectQueryKey({
+          schema: getInvoice,
+          cardinality: undefined
+        })
+      })
     },
   })
 
@@ -220,7 +223,11 @@ export const InvoiceView: React.FC<Props & { invoiceId: string }> = ({ invoice, 
       toast.success(`Invoice deleted`)
       // Invalidate the list invoices query to refresh the list
       await queryClient.invalidateQueries({
-        queryKey: createConnectQueryKey(listInvoices, {}),
+        queryKey: createConnectQueryKey({
+          schema: listInvoices,
+          input: {},
+          cardinality: 'finite'
+        }),
       })
       // Navigate back to the invoices list after successful deletion
       navigate(`${basePath}/invoices`)
@@ -234,7 +241,11 @@ export const InvoiceView: React.FC<Props & { invoiceId: string }> = ({ invoice, 
     onSuccess: async () => {
       toast.success('Invoice finalized')
       await queryClient.invalidateQueries({
-        queryKey: createConnectQueryKey(getInvoice, { id: invoice?.id ?? '' }),
+        queryKey: createConnectQueryKey({
+          schema: getInvoice,
+          input: { id: invoice?.id ?? '' },
+          cardinality: 'finite'
+        }),
       })
     },
     onError: error => {
@@ -247,11 +258,21 @@ export const InvoiceView: React.FC<Props & { invoiceId: string }> = ({ invoice, 
       toast.success('Invoice voided')
       await Promise.all([
         queryClient.invalidateQueries({
-          queryKey: createConnectQueryKey(getInvoice, { id: invoice?.id ?? '' }),
+          queryKey: createConnectQueryKey({
+            schema: getInvoice,
+            input: { id: invoice?.id ?? '' },
+            cardinality: 'finite'
+          }),
         }),
         queryClient.invalidateQueries({
-          queryKey: createConnectQueryKey(listCreditNotesByInvoiceId, {
-            invoiceId: invoice?.id ?? '',
+          queryKey: createConnectQueryKey({
+            schema: listCreditNotesByInvoiceId,
+
+            input: {
+              invoiceId: invoice?.id ?? '',
+            },
+
+            cardinality: 'finite'
           }),
         }),
       ])
@@ -265,7 +286,11 @@ export const InvoiceView: React.FC<Props & { invoiceId: string }> = ({ invoice, 
     onSuccess: async () => {
       toast.success('Invoice marked as uncollectible')
       await queryClient.invalidateQueries({
-        queryKey: createConnectQueryKey(getInvoice, { id: invoice?.id ?? '' }),
+        queryKey: createConnectQueryKey({
+          schema: getInvoice,
+          input: { id: invoice?.id ?? '' },
+          cardinality: 'finite'
+        }),
       })
     },
     onError: error => {
@@ -385,12 +410,16 @@ export const InvoiceView: React.FC<Props & { invoiceId: string }> = ({ invoice, 
         onCancel={() => {
           setIsEditMode(false)
           queryClient.invalidateQueries({
-            queryKey: createConnectQueryKey(getInvoice, { id: invoiceId }),
+            queryKey: createConnectQueryKey({
+              schema: getInvoice,
+              input: { id: invoiceId },
+              cardinality: 'finite'
+            }),
           })
         }}
         onSuccess={() => setIsEditMode(false)}
       />
-    )
+    );
   }
 
   return (
@@ -455,8 +484,21 @@ export const InvoiceView: React.FC<Props & { invoiceId: string }> = ({ invoice, 
         <Flex direction="column" className="gap-2 p-6 border-b border-border">
           <div className="flex justify-between items-center">
             <div className="flex items-center gap-3">
-              <InvoiceStatusBadge status={invoice.status} />
-              <div className="text-lg font-medium">Invoice {invoice.invoiceNumber}</div>
+              <InvoiceStatusBadge
+                status={invoice.status}
+                consolidatedInto={invoice.consolidatedIntoInvoiceId}
+              />
+              {invoice.consolidatedIntoInvoiceId ? (
+                <Link
+                  to={`${basePath}/invoices/${invoice.consolidatedIntoInvoiceId}`}
+                  className="flex items-center gap-1 text-lg font-medium hover:underline"
+                >
+                  Merged into {invoice.consolidatedIntoInvoiceNumber ?? 'consolidated invoice'}
+                  <ExternalLink size={15} />
+                </Link>
+              ) : (
+                <div className="text-lg font-medium">Invoice {invoice.invoiceNumber}</div>
+              )}
               {invoice.parentInvoiceId && (
                 <Link
                   to={`${basePath}/invoices/${invoice.parentInvoiceId}`}
@@ -474,6 +516,7 @@ export const InvoiceView: React.FC<Props & { invoiceId: string }> = ({ invoice, 
                 </Link>
               )}
             </div>
+            {!invoice.consolidatedIntoInvoiceId && (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button variant="secondary" size="sm" hasIcon>
@@ -694,7 +737,25 @@ export const InvoiceView: React.FC<Props & { invoiceId: string }> = ({ invoice, 
                 )}
               </DropdownMenuContent>
             </DropdownMenu>
+            )}
           </div>
+
+          {invoice.consolidatedIntoInvoiceId && (
+            <Link
+              to={`${basePath}/invoices/${invoice.consolidatedIntoInvoiceId}`}
+              className="flex items-center gap-2 rounded-md border border-border bg-muted/40 px-3 py-2 text-[13px] text-muted-foreground hover:text-foreground"
+            >
+              <ExternalLink size={14} />
+              <span>
+                This invoice was consolidated into{' '}
+                <span className="font-medium">
+                  {invoice.consolidatedIntoInvoiceNumber ?? 'a single invoice'}
+                </span>
+                . It is not charged or sent on its own — open the consolidated invoice to view or
+                pay.
+              </span>
+            </Link>
+          )}
 
           <div className="text-3xl font-bold">
             {formatCurrency(Number(invoice.total) || 0, invoice.currency)}
@@ -717,6 +778,19 @@ export const InvoiceView: React.FC<Props & { invoiceId: string }> = ({ invoice, 
                 </Link>
               }
             />
+            {invoice.subscriptionId && (
+              <FlexDetails
+                title="Subscription"
+                value={
+                  <Link
+                    to={`${basePath}/subscriptions/${invoice.subscriptionId}`}
+                    className="text-[13px] text-brand hover:underline"
+                  >
+                    View subscription
+                  </Link>
+                }
+              />
+            )}
             <FlexDetails title="Invoice date" value={parseAndFormatDate(invoice.invoiceDate)} />
             <FlexDetails title="Due date" value={parseAndFormatDateOptional(invoice.dueAt)} />
             {invoice.purchaseOrder && (
@@ -838,56 +912,6 @@ export const InvoiceView: React.FC<Props & { invoiceId: string }> = ({ invoice, 
             </>
           )}
 
-          <Separator className="-my-3" />
-
-          <Flex direction="column" className="gap-2 p-6">
-            <div className="text-[15px] font-medium">Timeline</div>
-            <div className="space-y-2">
-              <div className="flex items-start gap-2">
-                <div className="w-1.5 h-1.5 rounded-full bg-muted-foreground mt-1.5 flex-shrink-0"></div>
-                <div>
-                  <div className="text-[13px] font-medium">Invoice Created</div>
-                  <div className="text-[11px] text-muted-foreground">
-                    {parseAndFormatDate(invoice.createdAt)}
-                  </div>
-                </div>
-              </div>
-              {invoice.finalizedAt && (
-                <div className="flex items-start gap-2">
-                  <div className="w-1.5 h-1.5 rounded-full bg-success mt-1.5 flex-shrink-0"></div>
-                  <div>
-                    <div className="text-[13px] font-medium">Invoice Finalized</div>
-                    <div className="text-[11px] text-muted-foreground">
-                      {parseAndFormatDate(invoice.finalizedAt)}
-                    </div>
-                  </div>
-                </div>
-              )}
-              {invoice.voidedAt && (
-                <div className="flex items-start gap-2">
-                  <div className="w-1.5 h-1.5 rounded-full bg-red-500 mt-1.5 flex-shrink-0"></div>
-                  <div>
-                    <div className="text-[13px] font-medium">Invoice Voided</div>
-                    <div className="text-[11px] text-muted-foreground">
-                      {parseAndFormatDate(invoice.voidedAt)}
-                    </div>
-                  </div>
-                </div>
-              )}
-              {invoice.markedAsUncollectibleAt && (
-                <div className="flex items-start gap-2">
-                  <div className="w-1.5 h-1.5 rounded-full bg-warning mt-1.5 flex-shrink-0"></div>
-                  <div>
-                    <div className="text-[13px] font-medium">Invoice marked as Uncollectible</div>
-                    <div className="text-[11px] text-muted-foreground">
-                      {parseAndFormatDate(invoice.markedAsUncollectibleAt)}
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
-          </Flex>
-
           {creditNotes.length > 0 && (
             <>
               <Separator className="-my-3" />
@@ -922,6 +946,67 @@ export const InvoiceView: React.FC<Props & { invoiceId: string }> = ({ invoice, 
             </>
           )}
 
+          {invoice.consolidatedChildren.length > 0 && (
+            <>
+              <Separator className="-my-3" />
+              <Flex direction="column" className="gap-2 p-6">
+                <div className="text-[15px] font-medium">
+                  Consolidated from {invoice.consolidatedChildren.length} subscriptions
+                </div>
+                <div className="text-[12px] text-muted-foreground">
+                  This invoice merges the same-day subscription renewals below into a single charge.
+                </div>
+                <div className="space-y-2">
+                  {invoice.consolidatedChildren.map(child => (
+                    <div
+                      key={child.id}
+                      className="flex items-center justify-between gap-3 p-2 rounded-md hover:bg-muted/50 transition-colors"
+                    >
+                      <div className="flex min-w-0 items-center gap-3">
+                        <FileText size={14} className="shrink-0 text-muted-foreground" />
+                        {child.subscriptionId ? (
+                          <Link
+                            to={`${basePath}/subscriptions/${child.subscriptionId}`}
+                            className="truncate text-[13px] font-medium text-brand hover:underline"
+                          >
+                            {child.planName ?? 'Subscription'}
+                          </Link>
+                        ) : (
+                          <div className="truncate text-[13px] font-medium">
+                            {child.planName ?? 'Subscription'}
+                          </div>
+                        )}
+                      </div>
+                      <div className="flex shrink-0 items-center gap-3">
+                        <span className="text-[13px] font-medium">
+                          {formatCurrency(Number(child.total), invoice.currency)}
+                        </span>
+                        <Link
+                          to={`${basePath}/invoices/${child.id}`}
+                          className="flex items-center gap-1 text-[12px] text-muted-foreground hover:text-foreground"
+                          title="Open the per-subscription document"
+                        >
+                          Document
+                          <ExternalLink size={12} />
+                        </Link>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </Flex>
+            </>
+          )}
+
+          <Separator className="-my-3" />
+          <Flex direction="column" className="gap-2 p-6">
+            <div className="text-[15px] font-medium">Activity</div>
+            <EntityActivityTimeline
+              entityType="invoice"
+              entityId={invoiceId}
+              emptyLabel="No activity yet for this invoice"
+            />
+          </Flex>
+
           {getLatestConnMeta(invoice.connectionMetadata?.pennylane)?.externalId && (
             <>
               <Separator className="-my-3" />
@@ -938,10 +1023,31 @@ export const InvoiceView: React.FC<Props & { invoiceId: string }> = ({ invoice, 
         </div>
       </Flex>
 
-      {/* Right Panel - Invoice Preview */}
+      {/* Right Panel - Invoice Preview (a merged child has no standalone document) */}
       <div className="w-2/3 flex flex-col">
         <div className="flex-1 overflow-auto p-6">
-          <InvoicePreviewFrame invoiceId={invoiceId} invoice={invoice} />
+          {invoice.consolidatedIntoInvoiceId ? (
+            <div className="flex h-full flex-col items-center justify-center gap-3 text-center text-muted-foreground">
+              <FileText size={32} className="opacity-50" />
+              <div className="text-sm font-medium text-foreground">
+                No standalone document
+              </div>
+              <div className="max-w-sm text-[13px]">
+                This is an internal per-subscription record that was merged into{' '}
+                {invoice.consolidatedIntoInvoiceNumber ?? 'a consolidated invoice'}. The customer
+                only ever receives the consolidated invoice.
+              </div>
+              <Link
+                to={`${basePath}/invoices/${invoice.consolidatedIntoInvoiceId}`}
+                className="flex items-center gap-1 text-[13px] font-medium text-foreground hover:underline"
+              >
+                Open the consolidated invoice
+                <ExternalLink size={14} />
+              </Link>
+            </div>
+          ) : (
+            <InvoicePreviewFrame invoiceId={invoiceId} invoice={invoice} />
+          )}
         </div>
       </div>
     </Flex>
@@ -1048,7 +1154,7 @@ const InvoiceLineItemCard: React.FC<{
               <ChevronDown
                 size={12}
                 className={cn(
-                  'text-muted-foreground transition-transform flex-shrink-0 mt-0.5',
+                  'text-muted-foreground transition-transform shrink-0 mt-0.5',
                   isExpanded && 'rotate-180'
                 )}
               />

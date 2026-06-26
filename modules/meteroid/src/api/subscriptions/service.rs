@@ -8,15 +8,17 @@ use tonic::{Request, Response, Status};
 use meteroid_grpc::meteroid::api::subscriptions::v1::subscriptions_service_server::SubscriptionsService;
 
 use meteroid_grpc::meteroid::api::subscriptions::v1::{
-    ActivateSubscriptionRequest, ActivateSubscriptionResponse, CancelPlanChangeRequest,
-    CancelPlanChangeResponse, CancelScheduledEventRequest, CancelScheduledEventResponse,
-    CancelSlotTransactionRequest, CancelSlotTransactionResponse, CancelSubscriptionRequest,
-    CancelSubscriptionResponse, CreateSubscriptionRequest, CreateSubscriptionResponse,
-    CreateSubscriptionsRequest, CreateSubscriptionsResponse, GenerateCheckoutTokenRequest,
-    GenerateCheckoutTokenResponse, GetSlotsValueRequest, GetSlotsValueResponse,
-    GetSubscriptionComponentUsageRequest, GetSubscriptionComponentUsageResponse,
-    GetUpcomingInvoiceRequest, GetUpcomingInvoiceResponse, ListSlotTransactionsRequest,
-    ListSlotTransactionsResponse, ListSubscriptionsRequest, ListSubscriptionsResponse,
+    ActivateSubscriptionRequest, ActivateSubscriptionResponse, ApplyAmendmentRequest,
+    ApplyAmendmentResponse, CancelAmendmentRequest, CancelAmendmentResponse,
+    CancelPlanChangeRequest, CancelPlanChangeResponse, CancelScheduledEventRequest,
+    CancelScheduledEventResponse, CancelSlotTransactionRequest, CancelSlotTransactionResponse,
+    CancelSubscriptionRequest, CancelSubscriptionResponse, CreateSubscriptionRequest,
+    CreateSubscriptionResponse, CreateSubscriptionsRequest, CreateSubscriptionsResponse,
+    GenerateCheckoutTokenRequest, GenerateCheckoutTokenResponse, GetSlotsValueRequest,
+    GetSlotsValueResponse, GetSubscriptionComponentUsageRequest,
+    GetSubscriptionComponentUsageResponse, GetUpcomingInvoiceRequest, GetUpcomingInvoiceResponse,
+    ListSlotTransactionsRequest, ListSlotTransactionsResponse, ListSubscriptionsRequest,
+    ListSubscriptionsResponse, MrrChange, PreviewAmendmentRequest, PreviewAmendmentResponse,
     PreviewPlanChangeRequest, PreviewPlanChangeResponse, PreviewSlotUpdateRequest,
     PreviewSlotUpdateResponse, SchedulePlanChangeRequest, SchedulePlanChangeResponse,
     SubscriptionDetails, SyncToHubspotRequest, SyncToHubspotResponse, UpdateSlotsRequest,
@@ -32,6 +34,35 @@ use meteroid_store::repositories::subscriptions::{
     CancellationEffectiveAt, SubscriptionInterfaceAuto,
 };
 
+fn added_component_to_grpc(
+    a: meteroid_store::domain::subscription_changes::AddedComponent,
+) -> meteroid_grpc::meteroid::api::subscriptions::v1::PlanChangeAddedComponent {
+    meteroid_grpc::meteroid::api::subscriptions::v1::PlanChangeAddedComponent {
+        name: a.name,
+        fee: Some(mapping::price_components::subscription_fee_to_grpc(
+            &a.fee,
+            a.period.as_billing_period_opt().unwrap_or_default(),
+        )),
+        period: mapping::price_components::subscription_fee_billing_period_to_grpc(a.period).into(),
+    }
+}
+
+fn removed_component_to_grpc(
+    r: meteroid_store::domain::subscription_changes::RemovedComponent,
+) -> meteroid_grpc::meteroid::api::subscriptions::v1::PlanChangeRemovedComponent {
+    meteroid_grpc::meteroid::api::subscriptions::v1::PlanChangeRemovedComponent {
+        name: r.name,
+        current_fee: Some(mapping::price_components::subscription_fee_to_grpc(
+            &r.current_fee,
+            r.current_period.as_billing_period_opt().unwrap_or_default(),
+        )),
+        current_period: mapping::price_components::subscription_fee_billing_period_to_grpc(
+            r.current_period,
+        )
+        .into(),
+    }
+}
+
 #[tonic::async_trait]
 impl SubscriptionsService for SubscriptionServiceComponents {
     async fn create_subscription(
@@ -39,7 +70,7 @@ impl SubscriptionsService for SubscriptionServiceComponents {
         request: Request<CreateSubscriptionRequest>,
     ) -> Result<Response<CreateSubscriptionResponse>, Status> {
         let tenant_id = request.tenant()?;
-        let actor = request.actor()?;
+        let actor = request.actor_typed()?;
 
         let inner = request.into_inner();
 
@@ -49,11 +80,11 @@ impl SubscriptionsService for SubscriptionServiceComponents {
                 "No subscription provided".to_string(),
             ))?;
 
-        let subscription = mapping::subscriptions::create_proto_to_domain(subscription, &actor)?;
+        let subscription = mapping::subscriptions::create_proto_to_domain(subscription)?;
 
         let created = self
             .services
-            .insert_subscription(subscription, tenant_id)
+            .insert_subscription(actor, subscription, tenant_id)
             .await
             .map_err(Into::<SubscriptionApiError>::into)?;
 
@@ -70,19 +101,19 @@ impl SubscriptionsService for SubscriptionServiceComponents {
         request: Request<CreateSubscriptionsRequest>,
     ) -> Result<Response<CreateSubscriptionsResponse>, Status> {
         let tenant_id = request.tenant()?;
-        let actor = request.actor()?;
+        let actor = request.actor_typed()?;
 
         let inner = request.into_inner();
 
         let subscriptions = inner
             .subscriptions
             .into_iter()
-            .map(|s| mapping::subscriptions::create_proto_to_domain(s, &actor))
+            .map(mapping::subscriptions::create_proto_to_domain)
             .collect::<Result<Vec<_>, _>>()?;
 
         let inserted = self
             .services
-            .insert_subscription_batch(subscriptions, tenant_id)
+            .insert_subscription_batch(actor, subscriptions, tenant_id)
             .await
             .map_err(Into::<SubscriptionApiError>::into)?;
 
@@ -241,14 +272,13 @@ impl SubscriptionsService for SubscriptionServiceComponents {
         request: Request<CancelSubscriptionRequest>,
     ) -> Result<Response<CancelSubscriptionResponse>, Status> {
         let tenant_id = request.tenant()?;
-        let actor = request.actor()?;
+        let actor_typed = request.actor_typed()?;
         let inner = request.into_inner();
 
         use meteroid_grpc::meteroid::api::subscriptions::v1::cancel_subscription_request::EffectiveAt;
 
         let effective_at = match inner.effective_at {
             Some(EffectiveAt::Immediate(_)) => {
-                // For now, immediate cancellation maps to cancelling today, we could do sync
                 CancellationEffectiveAt::Date(chrono::Utc::now().date_naive())
             }
             Some(EffectiveAt::Date(date)) => {
@@ -263,11 +293,11 @@ impl SubscriptionsService for SubscriptionServiceComponents {
         let subscription = self
             .services
             .cancel_subscription(
+                actor_typed,
                 SubscriptionId::from_proto(inner.subscription_id)?,
                 tenant_id,
                 inner.reason,
                 effective_at,
-                actor,
             )
             .await
             .map_err(|err| {
@@ -478,6 +508,7 @@ impl SubscriptionsService for SubscriptionServiceComponents {
         request: Request<SchedulePlanChangeRequest>,
     ) -> Result<Response<SchedulePlanChangeResponse>, Status> {
         let tenant_id = request.tenant()?;
+        let actor_typed = request.actor_typed()?;
         let inner = request.into_inner();
 
         let subscription_id = SubscriptionId::from_proto(inner.subscription_id)?;
@@ -491,6 +522,7 @@ impl SubscriptionsService for SubscriptionServiceComponents {
                 let result = self
                     .services
                     .apply_plan_change_immediate(
+                        actor_typed.clone(),
                         subscription_id,
                         tenant_id,
                         new_plan_version_id,
@@ -509,6 +541,7 @@ impl SubscriptionsService for SubscriptionServiceComponents {
                 let event = self
                     .services
                     .schedule_plan_change(
+                        actor_typed,
                         subscription_id,
                         tenant_id,
                         new_plan_version_id,
@@ -636,12 +669,13 @@ impl SubscriptionsService for SubscriptionServiceComponents {
         request: Request<CancelPlanChangeRequest>,
     ) -> Result<Response<CancelPlanChangeResponse>, Status> {
         let tenant_id = request.tenant()?;
+        let actor = request.actor_typed()?;
         let inner = request.into_inner();
 
         let subscription_id = SubscriptionId::from_proto(inner.subscription_id)?;
 
         self.services
-            .cancel_plan_change(subscription_id, tenant_id)
+            .cancel_plan_change(actor, subscription_id, tenant_id)
             .await
             .map_err(Into::<SubscriptionApiError>::into)?;
 
@@ -654,6 +688,7 @@ impl SubscriptionsService for SubscriptionServiceComponents {
         request: Request<CancelScheduledEventRequest>,
     ) -> Result<Response<CancelScheduledEventResponse>, Status> {
         let tenant_id = request.tenant()?;
+        let actor = request.actor_typed()?;
         let inner = request.into_inner();
 
         let event_id = common_domain::ids::ScheduledEventId::from_proto(inner.event_id)?;
@@ -661,11 +696,152 @@ impl SubscriptionsService for SubscriptionServiceComponents {
             common_domain::ids::SubscriptionId::from_proto(inner.subscription_id)?;
 
         self.services
-            .cancel_scheduled_event(event_id, subscription_id, tenant_id)
+            .cancel_scheduled_event(actor, event_id, subscription_id, tenant_id)
             .await
             .map_err(Into::<SubscriptionApiError>::into)?;
 
         Ok(Response::new(CancelScheduledEventResponse {}))
+    }
+
+    #[tracing::instrument(skip_all)]
+    async fn preview_amendment(
+        &self,
+        request: Request<PreviewAmendmentRequest>,
+    ) -> Result<Response<PreviewAmendmentResponse>, Status> {
+        let tenant_id = request.tenant()?;
+        let inner = request.into_inner();
+
+        let subscription_id = SubscriptionId::from_proto(inner.subscription_id)?;
+        let amendment = mapping::amendment::map_amendment(
+            inner.apply_mode,
+            inner.component_changes,
+            inner.add_on_changes,
+        )?;
+
+        let result = self
+            .services
+            .preview_amendment(subscription_id, tenant_id, amendment)
+            .await
+            .map_err(Into::<SubscriptionApiError>::into)?;
+
+        // Needed to render the invoice previews (currency, period, plan name, net terms).
+        let details = self
+            .store
+            .get_subscription_details(tenant_id, subscription_id)
+            .await
+            .map_err(Into::<SubscriptionApiError>::into)?;
+
+        let preview = result.preview;
+
+        Ok(Response::new(PreviewAmendmentResponse {
+            added_components: preview
+                .component_added
+                .into_iter()
+                .map(added_component_to_grpc)
+                .collect(),
+            removed_components: preview
+                .component_removed
+                .into_iter()
+                .map(removed_component_to_grpc)
+                .collect(),
+            added_add_ons: preview
+                .addon_added
+                .into_iter()
+                .map(added_component_to_grpc)
+                .collect(),
+            removed_add_ons: preview
+                .addon_removed
+                .into_iter()
+                .map(removed_component_to_grpc)
+                .collect(),
+            effective_date: preview.effective_date.to_string(),
+            proration: result
+                .proration
+                .as_ref()
+                .map(mapping::plan_change::proration_summary_to_grpc),
+            change_direction: mapping::plan_change::change_direction_to_string(
+                result.change_direction,
+            ),
+            adjustment_invoice: result
+                .adjustment_invoice
+                .map(|c| mapping::upcoming::computed_content_to_upcoming_proto(c, &details)),
+            credit_note: result
+                .credit_note
+                .map(|c| mapping::upcoming::computed_content_to_upcoming_proto(c, &details)),
+            next_invoice: result
+                .next_invoice
+                .map(|c| mapping::upcoming::computed_content_to_upcoming_proto(c, &details)),
+            mrr: Some(MrrChange {
+                before_cents: result.mrr_before_cents,
+                after_cents: result.mrr_after_cents,
+                delta_cents: result.mrr_after_cents - result.mrr_before_cents,
+            }),
+        }))
+    }
+
+    #[tracing::instrument(skip_all)]
+    async fn apply_amendment(
+        &self,
+        request: Request<ApplyAmendmentRequest>,
+    ) -> Result<Response<ApplyAmendmentResponse>, Status> {
+        let tenant_id = request.tenant()?;
+        let actor = request.actor_typed()?;
+        let inner = request.into_inner();
+
+        let subscription_id = SubscriptionId::from_proto(inner.subscription_id)?;
+        let amendment = mapping::amendment::map_amendment(
+            inner.apply_mode,
+            inner.component_changes,
+            inner.add_on_changes,
+        )?;
+
+        match amendment.apply_mode {
+            meteroid_store::domain::subscription_changes::PlanChangeMode::Immediate => {
+                let result = self
+                    .services
+                    .apply_amendment_immediate(actor, subscription_id, tenant_id, amendment)
+                    .await
+                    .map_err(Into::<SubscriptionApiError>::into)?;
+
+                Ok(Response::new(ApplyAmendmentResponse {
+                    event_id: None,
+                    effective_date: result.effective_date.to_string(),
+                    invoice_id: result.adjustment_invoice_id.map(|id| id.to_string()),
+                }))
+            }
+            meteroid_store::domain::subscription_changes::PlanChangeMode::EndOfPeriod => {
+                let event = self
+                    .services
+                    .schedule_amendment(actor, subscription_id, tenant_id, amendment)
+                    .await
+                    .map_err(Into::<SubscriptionApiError>::into)?;
+
+                Ok(Response::new(ApplyAmendmentResponse {
+                    event_id: Some(event.id.to_string()),
+                    effective_date: event.scheduled_time.date().to_string(),
+                    invoice_id: None,
+                }))
+            }
+        }
+    }
+
+    #[tracing::instrument(skip_all)]
+    async fn cancel_amendment(
+        &self,
+        request: Request<CancelAmendmentRequest>,
+    ) -> Result<Response<CancelAmendmentResponse>, Status> {
+        let tenant_id = request.tenant()?;
+        let actor = request.actor_typed()?;
+        let inner = request.into_inner();
+
+        let subscription_id = SubscriptionId::from_proto(inner.subscription_id)?;
+
+        self.services
+            .cancel_amendment(actor, subscription_id, tenant_id)
+            .await
+            .map_err(Into::<SubscriptionApiError>::into)?;
+
+        Ok(Response::new(CancelAmendmentResponse {}))
     }
 
     #[tracing::instrument(skip_all)]
@@ -714,9 +890,15 @@ impl SubscriptionsService for SubscriptionServiceComponents {
             .await
             .map_err(Into::<SubscriptionApiError>::into)?;
 
+        let period = crate::api::shared::usage::resolve_usage_period(
+            inner.start_date.as_ref(),
+            inner.end_date.as_ref(),
+            &details.subscription,
+        )?;
+
         let usage = self
             .services
-            .get_subscription_component_usage(&details, metric_id)
+            .get_subscription_component_usage(&details, metric_id, period)
             .await
             .map_err(Into::<SubscriptionApiError>::into)?;
 

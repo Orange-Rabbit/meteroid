@@ -1,4 +1,4 @@
-import { useMutation } from '@connectrpc/connect-query'
+import { createConnectQueryKey, useMutation } from '@connectrpc/connect-query';
 import {
   Badge,
   Button,
@@ -53,7 +53,10 @@ export const CustomersCreatePanel = ({ visible, closePanel }: CustomersCreatePan
 
   const createCustomerMut = useMutation(createCustomer, {
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: [listCustomers.service.typeName] })
+      await queryClient.invalidateQueries({ queryKey: createConnectQueryKey({
+        schema: listCustomers.parent,
+        cardinality: undefined
+      }) })
     },
   })
 
@@ -165,7 +168,7 @@ export const CustomersCreatePanel = ({ visible, closePanel }: CustomersCreatePan
                                           {getCountryFlagEmoji(entity.country)}
                                         </div>
                                         <div>{entity.legalName}</div>
-                                        <div className="flex-grow" />
+                                        <div className="grow" />
                                         {entity.isDefault && (
                                           <Badge variant="default" size="sm">
                                             Default

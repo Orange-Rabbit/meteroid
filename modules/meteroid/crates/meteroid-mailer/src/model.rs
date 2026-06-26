@@ -23,6 +23,19 @@ impl Email {
     }
 }
 
+/// `delivered = false` means the transport short-circuited (e.g. test address);
+/// the body was rendered but never sent.
+#[derive(Clone)]
+pub struct RenderedEmail {
+    pub subject: String,
+    pub from: String,
+    pub reply_to: Option<String>,
+    pub recipients: Vec<EmailRecipient>,
+    pub body_html: String,
+    pub attachment_filenames: Vec<String>,
+    pub delivered: bool,
+}
+
 #[derive(Clone)]
 pub struct EmailAttachment {
     pub filename: String,
@@ -166,6 +179,16 @@ pub struct QuoteReady {
     pub portal_url: String,
     pub custom_message: Option<String>,
     pub account: String,
+}
+
+#[derive(Clone)]
+pub struct OrgInvite {
+    pub org_name: String,
+    pub inviter_name: String,
+    pub role: String,
+    pub invite_url: String,
+    pub expires_in: String,
+    pub recipient: EmailRecipient,
 }
 
 impl TryInto<Mailbox> for EmailRecipient {

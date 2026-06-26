@@ -24,6 +24,7 @@ import {
   ExternalLink,
   Pencil,
   RefreshCw,
+  SlidersHorizontal,
   X,
 } from 'lucide-react'
 import { ReactNode, useCallback, useState } from 'react'
@@ -31,6 +32,8 @@ import { Link, useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
 
 import { CopyToClipboardButton } from '@/components/CopyToClipboard'
+import { EntityActivityTimeline } from '@/features/activity/EntityActivityTimeline'
+import { EffectiveEntitlementsCard } from '@/features/entitlements/customer/EffectiveEntitlementsCard'
 import {
   IntegrationType,
   SyncSubscriptionModal,
@@ -45,6 +48,7 @@ import { formatSubscriptionFee } from '@/features/subscriptions/utils/fees'
 import { useBasePath } from '@/hooks/useBasePath'
 import { useIsExpressOrganization } from '@/hooks/useIsExpressOrganization'
 import { useQuery } from '@/lib/connectrpc'
+import { env } from '@/lib/env'
 import { getLatestConnMeta } from '@/pages/tenants/utils'
 import { listConnectors } from '@/rpc/api/connectors/v1/connectors-ConnectorsService_connectquery'
 import { ConnectorProviderEnum } from '@/rpc/api/connectors/v1/models_pb'
@@ -234,6 +238,11 @@ const scheduledEventLabel = (event: PendingScheduledEvent): { message: string; v
         message: `Trial ending on ${parseAndFormatDate(event.scheduledDate)}`,
         variant: 'warning',
       }
+    case ScheduledEventType.AMENDMENT:
+      return {
+        message: `Subscription amendment scheduled for ${parseAndFormatDate(event.scheduledDate)}`,
+        variant: 'default',
+      }
     default:
       return {
         message: `Scheduled event on ${parseAndFormatDate(event.scheduledDate)}`,
@@ -262,13 +271,34 @@ const ScheduledEventBanner = ({
   })
 
   const { message, variant } = scheduledEventLabel(event)
+  const summary =
+    event.eventType === ScheduledEventType.AMENDMENT ? event.amendmentSummary : undefined
+  const summaryLines: string[] = summary
+    ? [
+        ...summary.addedComponentNames.map(n => `+ ${n}`),
+        ...summary.removedComponentNames.map(n => `− ${n}`),
+        ...summary.addedAddOnNames.map(n => `+ ${n}`),
+        ...summary.removedAddOnNames.map(n => `− ${n}`),
+      ]
+    : []
 
   return (
     <Alert variant={variant}>
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <CalendarClock className="h-4 w-4 shrink-0" />
-          <span className="text-sm">{message}</span>
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex items-start gap-2">
+          <CalendarClock className="h-4 w-4 shrink-0 mt-0.5" />
+          <div>
+            <span className="text-sm">{message}</span>
+            {summaryLines.length > 0 && (
+              <div className="mt-1 space-y-0.5">
+                {summaryLines.map((line, idx) => (
+                  <div key={idx} className="text-xs text-muted-foreground">
+                    {line}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
         <Button
           variant="ghost"
@@ -504,6 +534,13 @@ export const Subscription = () => {
                     <DropdownMenuItem onClick={() => navigate('change-plan')}>
                       <ArrowLeftRight size="16" className="mr-2" />
                       Change Plan
+                    </DropdownMenuItem>
+                  )}
+                  {(data.status === SubscriptionStatus.ACTIVE ||
+                    data.status === SubscriptionStatus.TRIALING) && (
+                    <DropdownMenuItem onClick={() => navigate('amend')}>
+                      <SlidersHorizontal size="16" className="mr-2" />
+                      Amend subscription
                     </DropdownMenuItem>
                   )}
                   <Tooltip>
@@ -831,6 +868,20 @@ export const Subscription = () => {
             />
           </div>
         </div>
+
+        {env.entitlementsEnabled && (
+          <div className="bg-card rounded-lg border border-border shadow-sm mb-6">
+            <div className="p-4 border-b border-border">
+              <h3 className="text-md font-medium text-foreground">Entitlements</h3>
+            </div>
+            <div className="p-4">
+              <EffectiveEntitlementsCard
+                customerId={data.customerId}
+                currentSubscriptionId={data.id}
+              />
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Sidebar */}
@@ -893,20 +944,6 @@ export const Subscription = () => {
           <DetailRow label="Period End" value={parseAndFormatDateOptional(data.currentPeriodEnd)} />
         </DetailSection>
 
-        <DetailSection title="Timeline">
-          <DetailRow label="Created At" value={parseAndFormatDateTime(data.createdAt)} />
-          <DetailRow label="Start Date" value={parseAndFormatDate(data.startDate)} />
-          {data.billingStartDate && (
-            <DetailRow label="Billing Start" value={parseAndFormatDate(data.billingStartDate)} />
-          )}
-          {data.activatedAt && (
-            <DetailRow label="Activated At" value={parseAndFormatDateTime(data.activatedAt)} />
-          )}
-          {data.endDate && <DetailRow label="End Date" value={parseAndFormatDate(data.endDate)} />}
-          {/* {data.canceledAt && <DetailRow label="Canceled At" value={formatDate(data.canceledAt)} />}
-          {data.cancellationReason && <DetailRow label="Reason" value={data.cancellationReason} />} */}
-        </DetailSection>
-
         {data.trialDuration && (
           <DetailSection title="Trial Information">
             <DetailRow label="Trial Duration" value={`${data.trialDuration} days`} />
@@ -936,6 +973,14 @@ export const Subscription = () => {
             )}
           </DetailSection>
         )}
+
+        <DetailSection title="Activity">
+          <EntityActivityTimeline
+            entityType="subscription"
+            entityId={data.id}
+            emptyLabel="No activity yet for this subscription"
+          />
+        </DetailSection>
       </div>
     </div>
   )

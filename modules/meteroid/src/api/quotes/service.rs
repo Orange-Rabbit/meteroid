@@ -1,4 +1,5 @@
 use super::{QuoteServiceComponents, mapping};
+use crate::api::entitlements::mapping::entitlement_spec_from_proto;
 use crate::api::quotes::error::QuoteApiError;
 use crate::api::shared::conversions::FromProtoOpt;
 use crate::api::utils::PaginationExt;
@@ -125,10 +126,43 @@ impl QuotesService for QuoteServiceComponents {
             payment_methods_config: mapping::quotes::payment_methods_config_to_domain(
                 quote.payment_methods_config,
             ),
+            entitlements: quote
+                .entitlements
+                .into_iter()
+                .map(entitlement_spec_from_proto)
+                .collect::<Result<Vec<_>, _>>()?,
         };
 
+        // Parse informative usage example quantities (display-only).
+        // Components are matched by plan price_component_id when present, else by name.
+        let mut examples_by_component_id: std::collections::HashMap<
+            common_domain::ids::PriceComponentId,
+            rust_decimal::Decimal,
+        > = std::collections::HashMap::new();
+        let mut examples_by_name: std::collections::HashMap<String, rust_decimal::Decimal> =
+            std::collections::HashMap::new();
+        for ex in &quote.usage_examples {
+            let qty = ex
+                .example_quantity
+                .parse::<rust_decimal::Decimal>()
+                .map_err(|_| {
+                    Status::invalid_argument(format!(
+                        "Invalid example_quantity '{}'",
+                        ex.example_quantity
+                    ))
+                })?;
+            if let Some(pc_id) = &ex.price_component_id {
+                examples_by_component_id.insert(
+                    common_domain::ids::PriceComponentId::from_proto(pc_id)?,
+                    qty,
+                );
+            } else if let Some(name) = &ex.component_name {
+                examples_by_name.insert(name.clone(), qty);
+            }
+        }
+
         // Process quote components (fetch plan price components + products + prices first)
-        let quote_components = if let Some(components) = quote.components {
+        let mut quote_components = if let Some(components) = quote.components {
             let price_components = self
                 .store
                 .list_price_components(plan_version_id, tenant_id)
@@ -201,6 +235,21 @@ impl QuotesService for QuoteServiceComponents {
         } else {
             vec![]
         };
+
+        // Attach informative example usage quantities to usage-based components only.
+        if !examples_by_component_id.is_empty() || !examples_by_name.is_empty() {
+            for component in quote_components.iter_mut() {
+                if matches!(
+                    component.fee,
+                    meteroid_store::domain::SubscriptionFee::Usage { .. }
+                ) {
+                    component.example_usage_quantity = component
+                        .price_component_id
+                        .and_then(|id| examples_by_component_id.get(&id).copied())
+                        .or_else(|| examples_by_name.get(&component.name).copied());
+                }
+            }
+        }
 
         // Load plan info for product_family_id (needed for add-on materialization)
         use meteroid_store::repositories::plans::PlansInterface;
@@ -388,6 +437,7 @@ impl QuotesService for QuoteServiceComponents {
         request: Request<SendQuoteRequest>,
     ) -> Result<Response<SendQuoteResponse>, Status> {
         let tenant_id = request.tenant()?;
+        let actor = request.actor_typed()?;
         let inner = request.into_inner();
 
         let quote_id = QuoteId::from_proto(&inner.id)?;
@@ -395,7 +445,7 @@ impl QuotesService for QuoteServiceComponents {
         // Send the quote (publishes if draft, queues email)
         let _updated_quote = self
             .store
-            .send_quote(quote_id, tenant_id, inner.message)
+            .send_quote(actor, quote_id, tenant_id, inner.message)
             .await
             .map_err(Into::<QuoteApiError>::into)?;
 
@@ -427,6 +477,7 @@ impl QuotesService for QuoteServiceComponents {
         request: Request<CancelQuoteRequest>,
     ) -> Result<Response<CancelQuoteResponse>, Status> {
         let tenant_id = request.tenant()?;
+        let actor = request.actor_typed()?;
         let inner = request.into_inner();
 
         let quote_id = QuoteId::from_proto(&inner.id)?;
@@ -434,7 +485,7 @@ impl QuotesService for QuoteServiceComponents {
         // Cancel the quote
         let updated_quote = self
             .store
-            .cancel_quote(quote_id, tenant_id, inner.reason)
+            .cancel_quote(actor, quote_id, tenant_id, inner.reason)
             .await
             .map_err(Into::<QuoteApiError>::into)?;
 
@@ -515,13 +566,14 @@ impl QuotesService for QuoteServiceComponents {
         request: Request<PublishQuoteRequest>,
     ) -> Result<Response<PublishQuoteResponse>, Status> {
         let tenant_id = request.tenant()?;
+        let actor = request.actor_typed()?;
         let inner = request.into_inner();
 
         let quote_id = QuoteId::from_proto(&inner.id)?;
 
         let updated_quote = self
             .store
-            .publish_quote(quote_id, tenant_id)
+            .publish_quote(actor, quote_id, tenant_id)
             .await
             .map_err(Into::<QuoteApiError>::into)?;
 
@@ -543,7 +595,7 @@ impl QuotesService for QuoteServiceComponents {
         request: Request<ConvertQuoteToSubscriptionRequest>,
     ) -> Result<Response<ConvertQuoteToSubscriptionResponse>, Status> {
         let tenant_id = request.tenant()?;
-        let actor = request.actor()?;
+        let actor_typed = request.actor_typed()?;
         let inner = request.into_inner();
 
         let quote_id = QuoteId::from_proto(&inner.quote_id)?;
@@ -551,7 +603,7 @@ impl QuotesService for QuoteServiceComponents {
         // Convert the quote to a subscription
         let result = self
             .services
-            .convert_quote_to_subscription(tenant_id, quote_id, actor)
+            .convert_quote_to_subscription(actor_typed, tenant_id, quote_id)
             .await
             .map_err(Into::<QuoteApiError>::into)?;
 
@@ -611,6 +663,7 @@ fn process_quote_components(
                 fee: resolved.fee,
                 is_override: false,
                 price_id: resolved.price_id,
+                example_usage_quantity: None,
             });
         }
     }
@@ -650,6 +703,7 @@ fn process_quote_components(
                 fee,
                 is_override: true,
                 price_id: overridden.price_entry.existing_price_id(),
+                example_usage_quantity: None,
             });
         }
     }
@@ -686,6 +740,7 @@ fn process_quote_components(
             fee,
             is_override: false,
             price_id: extra.price_entry.existing_price_id(),
+            example_usage_quantity: None,
         });
     }
 
@@ -726,6 +781,7 @@ fn process_quote_components(
             fee: resolved.fee,
             is_override: false,
             price_id: resolved.price_id,
+            example_usage_quantity: None,
         });
     }
 

@@ -1,4 +1,4 @@
-use common_domain::ids::{BaseId, PlanVersionId, PriceComponentId, ProductId};
+use common_domain::ids::{PlanVersionId, PriceComponentId, ProductId};
 use common_grpc::middleware::server::auth::RequestExt;
 use meteroid_grpc::meteroid::api::components::v1::{
     CreatePriceComponentRequest, CreatePriceComponentResponse, EditPriceComponentRequest,
@@ -54,7 +54,7 @@ impl PriceComponentsService for PriceComponentServiceComponents {
         &self,
         request: Request<CreatePriceComponentRequest>,
     ) -> Result<Response<CreatePriceComponentResponse>, Status> {
-        let actor = request.actor()?;
+        let actor = request.actor_typed()?;
         let tenant_id = request.tenant()?;
         let req = request.into_inner();
 
@@ -74,7 +74,6 @@ impl PriceComponentsService for PriceComponentServiceComponents {
                 price_entries,
                 plan_version_id,
                 tenant_id,
-                actor,
             )
             .await
             .map_err(|err| {
@@ -91,8 +90,8 @@ impl PriceComponentsService for PriceComponentServiceComponents {
             .eventbus
             .publish(Event::price_component_created(
                 actor,
-                component.id.as_uuid(),
-                tenant_id.as_uuid(),
+                component.id,
+                tenant_id,
             ))
             .await;
 
@@ -106,7 +105,7 @@ impl PriceComponentsService for PriceComponentServiceComponents {
         &self,
         request: Request<EditPriceComponentRequest>,
     ) -> Result<Response<EditPriceComponentResponse>, Status> {
-        let actor = request.actor()?;
+        let actor = request.actor_typed()?;
         let tenant_id = request.tenant()?;
         let req = request.into_inner();
 
@@ -149,13 +148,7 @@ impl PriceComponentsService for PriceComponentServiceComponents {
 
         let component = self
             .store
-            .update_price_component_with_prices(
-                component,
-                price_inputs,
-                tenant_id,
-                plan_version_id,
-                actor,
-            )
+            .update_price_component_with_prices(component, price_inputs, tenant_id, plan_version_id)
             .await
             .map_err(|err| {
                 PriceComponentApiError::StoreError(
@@ -171,8 +164,8 @@ impl PriceComponentsService for PriceComponentServiceComponents {
             .eventbus
             .publish(Event::price_component_edited(
                 actor,
-                component.id.as_uuid(),
-                tenant_id.as_uuid(),
+                component.id,
+                tenant_id,
             ))
             .await;
 
@@ -186,7 +179,7 @@ impl PriceComponentsService for PriceComponentServiceComponents {
         &self,
         request: Request<RemovePriceComponentRequest>,
     ) -> Result<Response<EmptyResponse>, Status> {
-        let actor = request.actor()?;
+        let actor = request.actor_typed()?;
         let tenant_id = request.tenant()?;
         let req = request.into_inner();
 
@@ -207,8 +200,8 @@ impl PriceComponentsService for PriceComponentServiceComponents {
             .eventbus
             .publish(Event::price_component_removed(
                 actor,
-                price_component_id.as_uuid(),
-                tenant_id.as_uuid(),
+                price_component_id,
+                tenant_id,
             ))
             .await;
 

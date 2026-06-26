@@ -27,7 +27,10 @@ export const FamilyCreationModalPage = () => {
 
   const createDefaultMutation = useMutation(createProductFamily, {
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: createConnectQueryKey(listProductFamilies) })
+      await queryClient.invalidateQueries({ queryKey: createConnectQueryKey({
+        schema: listProductFamilies,
+        cardinality: 'finite'
+      }) })
     },
   })
 
@@ -35,7 +38,7 @@ export const FamilyCreationModalPage = () => {
 
   return (
     <TenantPageLayout>
-      <div className="storage-container flex flex-grow">
+      <div className="storage-container flex grow">
         <ProductEmptyState
           title="Product Families"
           ctaButtonLabel="Create default" // TODO modal

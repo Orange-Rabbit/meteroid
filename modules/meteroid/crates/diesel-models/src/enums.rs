@@ -1,3 +1,38 @@
+#[derive(diesel_derive_enum::DbEnum, Debug, Clone, Copy, Eq, PartialEq)]
+#[ExistingTypePath = "crate::schema::sql_types::ActorTypeEnum"]
+#[DbValueStyle = "SCREAMING_SNAKE_CASE"]
+pub enum ActorTypeEnum {
+    System,
+    User,
+    ApiToken,
+    Customer,
+    QuoteRecipient,
+}
+
+impl From<common_domain::actor::ActorType> for ActorTypeEnum {
+    fn from(a: common_domain::actor::ActorType) -> Self {
+        match a {
+            common_domain::actor::ActorType::System => Self::System,
+            common_domain::actor::ActorType::User => Self::User,
+            common_domain::actor::ActorType::ApiToken => Self::ApiToken,
+            common_domain::actor::ActorType::Customer => Self::Customer,
+            common_domain::actor::ActorType::QuoteRecipient => Self::QuoteRecipient,
+        }
+    }
+}
+
+impl From<ActorTypeEnum> for common_domain::actor::ActorType {
+    fn from(a: ActorTypeEnum) -> Self {
+        match a {
+            ActorTypeEnum::System => Self::System,
+            ActorTypeEnum::User => Self::User,
+            ActorTypeEnum::ApiToken => Self::ApiToken,
+            ActorTypeEnum::Customer => Self::Customer,
+            ActorTypeEnum::QuoteRecipient => Self::QuoteRecipient,
+        }
+    }
+}
+
 #[derive(diesel_derive_enum::DbEnum, Debug, Clone)]
 #[ExistingTypePath = "crate::schema::sql_types::BankAccountFormat"]
 #[DbValueStyle = "SCREAMING_SNAKE_CASE"]
@@ -145,12 +180,21 @@ pub enum MrrMovementType {
     Reactivation,
 }
 
-#[derive(diesel_derive_enum::DbEnum, Debug, Clone)]
+#[derive(diesel_derive_enum::DbEnum, Debug, Clone, Copy, PartialEq, Eq)]
 #[ExistingTypePath = "crate::schema::sql_types::OrganizationUserRole"]
 #[DbValueStyle = "SCREAMING_SNAKE_CASE"]
 pub enum OrganizationUserRole {
     Admin,
     Member,
+}
+
+impl std::fmt::Display for OrganizationUserRole {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            OrganizationUserRole::Admin => write!(f, "Owner"),
+            OrganizationUserRole::Member => write!(f, "Member"),
+        }
+    }
 }
 
 #[derive(diesel_derive_enum::DbEnum, Debug, Clone, Eq, PartialEq)]
@@ -312,6 +356,7 @@ pub enum ScheduledEventTypeEnum {
     CancelSubscription,
     PauseSubscription,
     EndTrial,
+    ApplyAmendment,
 }
 
 #[derive(diesel_derive_enum::DbEnum, Debug, Clone)]
@@ -405,4 +450,41 @@ pub enum BatchJobChunkStatusEnum {
     Completed,
     Failed,
     Skipped,
+}
+
+#[derive(diesel_derive_enum::DbEnum, Debug, Clone, PartialEq, Eq)]
+#[ExistingTypePath = "crate::schema::sql_types::FeatureTypeEnum"]
+#[DbValueStyle = "SCREAMING_SNAKE_CASE"]
+pub enum FeatureTypeEnum {
+    Boolean,
+    Metered,
+}
+
+#[derive(diesel_derive_enum::DbEnum, Debug, Clone, PartialEq, Eq)]
+#[ExistingTypePath = "crate::schema::sql_types::FeatureStatusEnum"]
+#[DbValueStyle = "SCREAMING_SNAKE_CASE"]
+pub enum FeatureStatusEnum {
+    Active,
+    Disabled,
+    Archived,
+}
+
+#[derive(diesel_derive_enum::DbEnum, Debug, Clone, PartialEq, Eq)]
+#[ExistingTypePath = "crate::schema::sql_types::EntitlementModeEnum"]
+#[DbValueStyle = "SCREAMING_SNAKE_CASE"]
+pub enum EntitlementModeEnum {
+    Override,
+    Stack,
+}
+
+#[derive(diesel_derive_enum::DbEnum, Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[ExistingTypePath = "crate::schema::sql_types::EntitlementEntityTypeEnum"]
+#[DbValueStyle = "SCREAMING_SNAKE_CASE"]
+pub enum EntitlementEntityTypeEnum {
+    Feature,
+    PlanVersion,
+    AddOn,
+    Plan,
+    Subscription,
+    Quote,
 }

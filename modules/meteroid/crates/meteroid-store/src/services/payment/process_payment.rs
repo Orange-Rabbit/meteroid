@@ -1,6 +1,7 @@
 use crate::StoreResult;
 use crate::adapters::payment_service_providers::initialize_payment_provider;
 use crate::domain::connectors::Connector;
+use crate::domain::entity_activity::Actor;
 use crate::domain::payment_transactions::{PaymentIntent, PaymentTransaction};
 use crate::errors::StoreError;
 use crate::repositories::payment_transactions::PaymentTransactionInterface;
@@ -34,6 +35,12 @@ impl Services {
         let invoice = InvoiceRow::select_for_update_by_id(conn, tenant_id, invoice_id)
             .await
             .map_err(Into::<Report<StoreError>>::into)?;
+
+        // A consolidated child is billed via its parent; paying it directly would double-charge.
+        if invoice.invoice.consolidated_into_invoice_id.is_some() {
+            return Err(Report::new(StoreError::BillingError)
+                .attach("Cannot pay an invoice merged into a consolidated parent"));
+        }
 
         // Allow both draft and finalized invoices
         if invoice.invoice.status != diesel_models::enums::InvoiceStatusEnum::Draft
@@ -136,6 +143,7 @@ impl Services {
             .store
             .consolidate_intent_and_transaction_tx(
                 conn,
+                &Actor::System,
                 inserted_transaction.into(),
                 payment_intent,
             )

@@ -1,11 +1,11 @@
 use crate::StoreResult;
 use crate::errors::{StoreError, StoreErrorReport};
+use crate::services::clients::usage::UsageClient;
 use common_domain::ids::{OrganizationId, PlanId};
 use common_eventbus::{Event, EventBus};
 use diesel::{ConnectionError, ConnectionResult};
 use diesel_async::pooled_connection::deadpool::{Object, Pool};
 use diesel_async::pooled_connection::{AsyncDieselConnectionManager, ManagerConfig};
-use diesel_async::scoped_futures::{ScopedBoxFuture, ScopedFutureExt};
 use diesel_async::{AsyncConnection, AsyncPgConnection};
 use envconfig::Envconfig;
 use error_stack::{Report, ResultExt};
@@ -17,6 +17,7 @@ use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, Server
 use rustls::crypto::{verify_tls12_signature, verify_tls13_signature};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{DigitallySignedStruct, Error, SignatureScheme};
+use scoped_futures::ScopedBoxFuture;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -31,10 +32,11 @@ pub struct Settings {
     pub jwt_secret: secrecy::SecretString,
     pub multi_organization_enabled: bool,
     pub public_url: String,
-    pub skip_email_validation: bool,
+    pub mailer_enabled: bool,
     pub domains_whitelist: Vec<String>,
     pub billing_default_plan_id: Option<PlanId>,
     pub admin_organization: Option<OrganizationId>,
+    pub invite_ttl_days: u32,
 }
 
 #[allow(clippy::upper_case_acronyms)]
@@ -49,6 +51,7 @@ pub struct Store {
     pub(crate) oauth: OauthServices,
     pub mailer: Arc<dyn MailerService>,
     pub billing: Option<Arc<PLACEHOLDER>>,
+    pub usage_client: Arc<dyn UsageClient>,
 }
 
 pub struct StoreConfig {
@@ -56,7 +59,7 @@ pub struct StoreConfig {
     pub crypt_key: secrecy::SecretString,
     pub jwt_secret: secrecy::SecretString,
     pub multi_organization_enabled: bool,
-    pub skip_email_validation: bool,
+    pub mailer_enabled: bool,
     pub public_url: String,
     pub eventbus: Arc<dyn EventBus<Event>>,
     pub mailer: Arc<dyn MailerService>,
@@ -65,6 +68,8 @@ pub struct StoreConfig {
     pub admin_organization_id: Option<OrganizationId>,
     pub billing: Option<Arc<PLACEHOLDER>>,
     pub billing_default_plan_id: Option<PlanId>,
+    pub usage_client: Arc<dyn UsageClient>,
+    pub invite_ttl_days: u32,
 }
 
 /**
@@ -150,15 +155,17 @@ impl Store {
                 jwt_secret: config.jwt_secret,
                 multi_organization_enabled: config.multi_organization_enabled,
                 public_url: config.public_url,
-                skip_email_validation: config.skip_email_validation,
+                mailer_enabled: config.mailer_enabled,
                 domains_whitelist: config.domains_whitelist,
                 billing_default_plan_id: config.billing_default_plan_id,
                 admin_organization: config.admin_organization_id,
+                invite_ttl_days: config.invite_ttl_days,
             },
             internal: StoreInternal {},
             mailer: config.mailer,
             oauth: config.oauth,
             billing: config.billing,
+            usage_client: config.usage_client,
         })
     }
 
@@ -215,12 +222,9 @@ impl StoreInternal {
         R: Send + 'a,
     {
         let result = conn
-            .transaction(|conn| {
-                async move {
-                    let res = callback(conn);
-                    res.await.map_err(crate::errors::StoreErrorContainer::from)
-                }
-                .scope_boxed()
+            .transaction(async |conn| {
+                let res = callback(conn);
+                res.await.map_err(crate::errors::StoreErrorContainer::from)
             })
             .await?;
 

@@ -2,6 +2,7 @@ syntax = "proto3";
 
 import "api/shared/v1/shared.proto";
 
+import "api/entitlements/v1/models.proto";
 import "api/schedules/v1/models.proto";
 import "api/pricecomponents/v1/models.proto";
 import "api/prices/v1/models.proto";
@@ -50,7 +51,6 @@ message Subscription {
   string plan_version_id = 13;
   uint32 version = 14;
   string created_at = 15;
-  string created_by = 16;
   uint32 net_terms = 17;
   optional string invoice_memo = 18;
   optional string invoice_threshold = 19;
@@ -104,6 +104,17 @@ enum ScheduledEventType {
   CANCEL = 1;
   PAUSE = 2;
   END_TRIAL = 3;
+  AMENDMENT = 4;
+}
+
+// Human-readable summary of what a scheduled amendment will change, for the
+// pending-event banner. Removed names are resolved against the subscription's
+// current components/add-ons when available, otherwise omitted.
+message AmendmentSummary {
+  repeated string added_component_names = 1;
+  repeated string removed_component_names = 2;
+  repeated string added_add_on_names = 3;
+  repeated string removed_add_on_names = 4;
 }
 
 message PendingScheduledEvent {
@@ -113,6 +124,10 @@ message PendingScheduledEvent {
   optional string new_plan_name = 4;
   optional string new_plan_version_id = 5;
   optional string cancel_reason = 6;
+  // True when the event was scheduled by the customer (e.g. via the portal),
+  // false when scheduled by an admin/API actor.
+  bool customer_initiated = 7;
+  optional AmendmentSummary amendment_summary = 8;
 }
 
 // TODO replace by subscription or even subscription details
@@ -127,7 +142,6 @@ message CreatedSubscription {
   optional string end_date = 8;
   string plan_version_id = 9;
   string created_at = 10;
-  string created_by = 11;
   uint32 net_terms = 12;
   optional string invoice_memo = 13;
   optional string invoice_threshold = 14;
@@ -160,6 +174,7 @@ message CreateSubscription {
   // Migration mode: when true with a past start_date, skip creating invoices for past cycles.
   // The subscription will be set to the current billing period with correct cycle_index.
   optional bool skip_past_invoices = 22;
+  repeated meteroid.api.entitlements.v1.EntitlementSpec entitlements = 23;
 }
 
 enum ActivationCondition {

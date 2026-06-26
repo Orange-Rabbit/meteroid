@@ -3,11 +3,11 @@ use crate::errors::IntoDbResult;
 use crate::extend::order::{OrderByParam, OrderDirection};
 use crate::extend::pagination::{Paginate, PaginatedVec, PaginationRequest};
 use crate::quotes::{
-    QuoteActivityRow, QuoteActivityRowNew, QuoteComponentRow, QuoteComponentRowNew, QuoteRow,
-    QuoteRowNew, QuoteRowUpdate, QuoteSignatureRow, QuoteSignatureRowNew, QuoteWithCustomerRow,
+    QuoteComponentRow, QuoteComponentRowNew, QuoteRow, QuoteRowNew, QuoteRowUpdate,
+    QuoteSignatureRow, QuoteSignatureRowNew, QuoteWithCustomerRow,
 };
 use crate::{DbResult, PgConn};
-use common_domain::ids::{CustomerId, QuoteId, StoredDocumentId, TenantId};
+use common_domain::ids::{CustomerId, ProductId, QuoteId, StoredDocumentId, TenantId};
 use diesel::{
     BoolExpressionMethods, JoinOnDsl, PgSortExpressionMethods, PgTextExpressionMethods,
     SelectableHelper, debug_query,
@@ -374,52 +374,40 @@ impl QuoteSignatureRow {
     }
 }
 
-impl QuoteActivityRowNew {
-    pub async fn insert(&self, conn: &mut PgConn) -> DbResult<QuoteActivityRow> {
-        use crate::schema::quote_activity::dsl::quote_activity;
-        use diesel_async::RunQueryDsl;
-
-        let query = diesel::insert_into(quote_activity).values(self);
-
-        log::debug!("{}", debug_query::<diesel::pg::Pg, _>(&query));
-
-        query
-            .get_result(conn)
-            .await
-            .attach("Error while inserting quote activity")
-            .into_db_result()
-    }
-}
-
-impl QuoteActivityRow {
-    pub async fn list_by_quote_id(
+impl QuoteComponentRow {
+    /// Fetch distinct product IDs from quote components for the given quotes.
+    pub async fn list_product_ids(
         conn: &mut PgConn,
-        param_quote_id: QuoteId,
-        limit: Option<i64>,
-    ) -> DbResult<Vec<QuoteActivityRow>> {
-        use crate::schema::quote_activity::dsl::{created_at, quote_activity, quote_id};
+        quote_ids: &[QuoteId],
+        tenant_id: &TenantId,
+    ) -> DbResult<Vec<ProductId>> {
+        use crate::schema::quote::dsl as q_dsl;
+        use crate::schema::quote_component::dsl as qc_dsl;
+        use diesel::dsl::not;
         use diesel_async::RunQueryDsl;
 
-        let mut query = quote_activity
-            .filter(quote_id.eq(param_quote_id))
-            .order(created_at.desc())
-            .into_boxed();
-
-        if let Some(limit_val) = limit {
-            query = query.limit(limit_val);
+        if quote_ids.is_empty() {
+            return Ok(vec![]);
         }
 
+        let query = qc_dsl::quote_component
+            .inner_join(q_dsl::quote)
+            .filter(qc_dsl::quote_id.eq_any(quote_ids))
+            .filter(q_dsl::tenant_id.eq(tenant_id))
+            .filter(not(qc_dsl::product_id.is_null()))
+            .select(qc_dsl::product_id);
+
         log::debug!("{}", debug_query::<diesel::pg::Pg, _>(&query));
 
-        query
-            .load(conn)
+        let rows: Vec<Option<ProductId>> = query
+            .get_results(conn)
             .await
-            .attach("Error while listing quote activities")
-            .into_db_result()
-    }
-}
+            .attach("Error while fetching product ids from quote components")
+            .into_db_result()?;
 
-impl QuoteComponentRow {
+        Ok(rows.into_iter().flatten().collect())
+    }
+
     pub async fn list_by_quote_id(
         conn: &mut PgConn,
         param_quote_id: QuoteId,

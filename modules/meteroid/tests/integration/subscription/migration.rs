@@ -245,11 +245,11 @@ async fn test_migration_rejects_future_start_date(#[future] test_env: TestEnv) {
     let result = env
         .services()
         .insert_subscription(
+            common_domain::actor::Actor::System,
             meteroid_store::domain::CreateSubscription {
                 subscription: meteroid_store::domain::SubscriptionNew {
                     customer_id: CUST_UBER_ID,
                     plan_version_id: PLAN_VERSION_1_LEETCODE_ID,
-                    created_by: USER_ID,
                     net_terms: None,
                     invoice_memo: None,
                     invoice_threshold: None,
@@ -271,6 +271,7 @@ async fn test_migration_rejects_future_start_date(#[future] test_env: TestEnv) {
                 price_components: None,
                 add_ons: None,
                 coupons: None,
+                entitlements: vec![],
             },
             TENANT_ID,
         )
@@ -291,11 +292,11 @@ async fn test_migration_rejects_manual_activation(#[future] test_env: TestEnv) {
     let result = env
         .services()
         .insert_subscription(
+            common_domain::actor::Actor::System,
             meteroid_store::domain::CreateSubscription {
                 subscription: meteroid_store::domain::SubscriptionNew {
                     customer_id: CUST_UBER_ID,
                     plan_version_id: PLAN_VERSION_1_LEETCODE_ID,
-                    created_by: USER_ID,
                     net_terms: None,
                     invoice_memo: None,
                     invoice_threshold: None,
@@ -317,6 +318,7 @@ async fn test_migration_rejects_manual_activation(#[future] test_env: TestEnv) {
                 price_components: None,
                 add_ons: None,
                 coupons: None,
+                entitlements: vec![],
             },
             TENANT_ID,
         )
@@ -337,11 +339,11 @@ async fn test_migration_rejects_on_checkout_activation(#[future] test_env: TestE
     let result = env
         .services()
         .insert_subscription(
+            common_domain::actor::Actor::System,
             meteroid_store::domain::CreateSubscription {
                 subscription: meteroid_store::domain::SubscriptionNew {
                     customer_id: CUST_UBER_ID,
                     plan_version_id: PLAN_VERSION_1_LEETCODE_ID,
-                    created_by: USER_ID,
                     net_terms: None,
                     invoice_memo: None,
                     invoice_threshold: None,
@@ -363,6 +365,7 @@ async fn test_migration_rejects_on_checkout_activation(#[future] test_env: TestE
                 price_components: None,
                 add_ons: None,
                 coupons: None,
+                entitlements: vec![],
             },
             TENANT_ID,
         )

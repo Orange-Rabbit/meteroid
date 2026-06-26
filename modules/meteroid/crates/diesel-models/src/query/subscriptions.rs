@@ -82,6 +82,23 @@ impl SubscriptionRow {
             .into_db_result()
     }
 
+    pub async fn get_customer_id(
+        conn: &mut PgConn,
+        tenant_id_param: &TenantId,
+        subscription_id_param: SubscriptionId,
+    ) -> DbResult<common_domain::ids::CustomerId> {
+        use crate::schema::subscription::dsl::{customer_id, id, subscription, tenant_id};
+
+        subscription
+            .filter(id.eq(subscription_id_param))
+            .filter(tenant_id.eq(tenant_id_param))
+            .select(customer_id)
+            .get_result(conn)
+            .await
+            .attach("Error while fetching subscription customer_id")
+            .into_db_result()
+    }
+
     pub async fn get_subscription_period_by_id(
         conn: &mut PgConn,
         tenant_id_param: &TenantId,
@@ -362,6 +379,47 @@ impl SubscriptionRow {
             .get_result(conn)
             .await
             .attach("Error while updating subscription")
+            .into_db_result()
+    }
+
+    /// Returns subscriptions that should grant entitlements to their customer.
+    ///
+    /// "Active" here means the customer is currently entitled to the plan's features.
+    /// Included statuses:
+    ///   - `Active`: regular paid, in-cycle subscription.
+    ///   - `TrialActive`: trial in progress — entitlements granted to let trialists evaluate.
+    ///   - `PendingCharge`: invoice issued, not yet collected; access continues during dunning.
+    ///
+    /// Excluded by design: `Paused`, `Pending`, `TrialExpired`, `Cancelled`, `Ended`,
+    /// `Suspended`, `Completed`. Pause and trial-expiration both intentionally cut off
+    /// feature access until the operator reactivates.
+    pub async fn find_active_by_customer(
+        conn: &mut PgConn,
+        customer_id: CustomerId,
+        tenant_id: TenantId,
+    ) -> DbResult<Vec<SubscriptionRow>> {
+        use crate::enums::SubscriptionStatusEnum;
+        use crate::schema::subscription::dsl as s_dsl;
+        use error_stack::ResultExt;
+
+        let active_statuses = vec![
+            SubscriptionStatusEnum::Active,
+            SubscriptionStatusEnum::TrialActive,
+            SubscriptionStatusEnum::PendingCharge,
+        ];
+
+        let query = s_dsl::subscription
+            .filter(s_dsl::customer_id.eq(customer_id))
+            .filter(s_dsl::tenant_id.eq(tenant_id))
+            .filter(s_dsl::status.eq_any(active_statuses))
+            .select(SubscriptionRow::as_select());
+
+        log::debug!("{}", debug_query::<diesel::pg::Pg, _>(&query));
+
+        query
+            .get_results(conn)
+            .await
+            .attach("Error while fetching active subscriptions by customer")
             .into_db_result()
     }
 }
